@@ -2352,6 +2352,68 @@ public class AutoAsignarmeDto
                 nombreDocenteNuevo = nombreEntra
             });
         }
+
+        // ══════════════════════════════════════════════════════════════════════
+        // POST /api/Proyectos/{idProyecto}/MarcarRevisionCompletada
+        // El revisor de anteproyecto marca que terminó su revisión.
+        // Estado 4 (En Espera de Revisión) → 5 (Anteproyecto Revisado) → 6 (En Espera de Asesor Interno)
+        // ══════════════════════════════════════════════════════════════════════
+        [Authorize]
+        [HttpPost("{idProyecto:int}/MarcarRevisionCompletada")]
+        public async Task<IActionResult> MarcarRevisionCompletada(int idProyecto)
+        {
+            const int ESTADO_ESPERA_REVISION     = 4;
+            const int ESTADO_REVISADO            = 5;
+            const int ESTADO_ESPERA_ASESOR       = 6;
+
+            if (idProyecto <= 0) return BadRequest("idProyecto inválido.");
+
+            // Identificar al docente actual
+            var userId = GetUserId();
+            if (userId == 0) return Unauthorized();
+
+            var docente = await _context.Docentes
+                .FirstOrDefaultAsync(d => d.idUsuario == userId);
+            if (docente == null) return NotFound("No existe un docente para este usuario.");
+
+            // Cargar el proyecto
+            var proyecto = await _context.Proyectos.FirstOrDefaultAsync(p => p.Id == idProyecto);
+            if (proyecto == null) return NotFound("Proyecto no encontrado.");
+
+            // Solo se puede marcar cuando está en estado 4
+            if (proyecto.idEstado != ESTADO_ESPERA_REVISION)
+                return Conflict($"El proyecto debe estar en estado 4 (En Espera de Revisión de Anteproyecto). Estado actual: {proyecto.idEstado}.");
+
+            // Verificar que el docente actual es el revisor del anteproyecto
+            var tipoRevisor = await _context.TipoRelacionDocenteProyecto
+                .AsNoTracking()
+                .FirstOrDefaultAsync(t => t.Clave == "REVISOR_ANTEPROYECTO" && t.Activo);
+
+            if (tipoRevisor == null) return BadRequest("Tipo de relación REVISOR_ANTEPROYECTO no configurado.");
+
+            var esRevisor = await _context.ProyectoDocente.AnyAsync(pd =>
+                pd.idProyecto == idProyecto &&
+                pd.IdTipoRelacion == tipoRevisor.Id &&
+                pd.idDocente == docente.Id);
+
+            if (!esRevisor)
+                return Forbid(); // Solo el revisor asignado puede marcar revisión completada
+
+            // Avanzar: 4 → 5 (Revisado) → 6 (En Espera de Asesor)
+            // Se hace en un solo paso para no dejar el proyecto en estado intermedio innecesario
+            proyecto.idEstado = ESTADO_REVISADO;
+            await _context.SaveChangesAsync();
+
+            proyecto.idEstado = ESTADO_ESPERA_ASESOR;
+            await _context.SaveChangesAsync();
+
+            return Ok(new
+            {
+                ok = true,
+                estadoNuevo = proyecto.idEstado,
+                mensaje = "Revisión completada. El proyecto avanzó a 'En Espera de Asignación de Asesor Interno'."
+            });
+        }
     }
 }
     

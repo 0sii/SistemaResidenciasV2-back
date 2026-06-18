@@ -166,3 +166,4 @@ C:\Users\osihe\Documentos\WebApiVinculacionProyectosV2-master\WebApiVinculacionP
 C:\Users\osihe\Documentos\WebApiVinculacionProyectosV2-master\WebApiVinculacionProyectosV2-master\webApiVinculacionProyectosV2\obj\Debug\net8.0\WebApiVinculacionProyectosV2.pdb
 C:\Users\osihe\Documentos\WebApiVinculacionProyectosV2-master\WebApiVinculacionProyectosV2-master\webApiVinculacionProyectosV2\obj\Debug\net8.0\WebApiVinculacionProyectosV2.genruntimeconfig.cache
 C:\Users\osihe\Documentos\WebApiVinculacionProyectosV2-master\WebApiVinculacionProyectosV2-master\webApiVinculacionProyectosV2\obj\Debug\net8.0\ref\WebApiVinculacionProyectosV2.dll
+C:\Users\osihe\Documentos\WebApiVinculacionProyectosV2-master\WebApiVinculacionProyectosV2-master\webApiVinculacionProyectosV2\obj\Debug\net8.0\WebApiVinculacionProyectosV2.sourcelink.json

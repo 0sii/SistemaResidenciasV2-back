@@ -921,7 +921,7 @@ namespace WebApiVinculacionProyectosV2.Models
         {
             modelBuilder.Entity<ProyectoDocente>(entity =>
             {
-                entity.ToTable("ProyectoDocente");
+                entity.ToTable("proyectodocente");
                 entity.HasKey(pd => pd.id);
 
                 entity.HasOne<Proyectos>()
