@@ -94,7 +94,7 @@ namespace WebApiVinculacionProyectosV2.Controllers
 {
     [Route("api/[controller]")]
     [ApiController]
-    public class ProyectosController : ControllerBase
+   public partial class ProyectosController : ControllerBase    
     {
         private readonly ResidenciasDbContext _context;
         private readonly IWebHostEnvironment _env;
@@ -1880,76 +1880,8 @@ public async Task<IActionResult> CrearInvitaciones(int idProyecto, [FromBody] Li
                 select car != null ? car.Descripcion : null
             ).FirstOrDefaultAsync() ?? "—";
 
-            byte[] pdfBytes; string pdfFileName;
-
-            if (clave == "ASESOR_INTERNO")
-            {
-                var req = new OficioAsignacionAsesorInternoRequest
-                {
-                    Fecha                   = DateTime.Today,
-                    Oficio                  = numeroOficio,
-                    DestinatarioNombre      = docenteNombre,
-                    DestinatarioCargoLinea1 = "DOCENTE DEL DEPARTAMENTO DE SISTEMAS Y COMPUTACIÓN",
-                    NombreProyecto          = proyecto.Titulo ?? "—",
-                    Empresa                 = empresa,
-                    Carrera                 = carrera,
-                    PeriodoRealizacion      = periodoTxt,
-                    Residentes              = estudianteRows.Select(e => e.Nombre.Trim()).ToList(),
-                    FirmaNombre             = firmaNombre,
-                    FirmaCargoLinea1        = "JEFA(E) DEL DEPARTAMENTO",
-                    FirmaCargoLinea2        = "DE SISTEMAS Y COMPUTACIÓN"
-                };
-                pdfBytes  = _pdf.BuildOficioAsignacionAsesorInterno(mem.PdfBytes, req);
-                pdfFileName = $"Oficio_AsesorInterno_{numeroOficio.Replace("/","-")}.pdf";
-            }
-            else // REVISOR_ANTEPROYECTO o REVISOR_RESIDENCIA
-            {
-                var asesorNombre = await (from pd in _context.ProyectoDocente.AsNoTracking()
-                                          join t in _context.TipoRelacionDocenteProyecto.AsNoTracking() on pd.IdTipoRelacion equals t.Id
-                                          join d in _context.Docentes.AsNoTracking() on pd.idDocente equals d.Id
-                                          where pd.idProyecto == idProyecto && t.Clave == "ASESOR_INTERNO"
-                                          select (d.Nombre ?? "") + " " + (d.ApellidoPaterno ?? "") + " " + (d.ApellidoMaterno ?? "")
-                                         ).FirstOrDefaultAsync();
-
-                var rows = estudianteRows.Select(e => new OficioRevisorRow {
-                    NoControl  = e.noControl ?? "—",
-                    Estudiante = e.Nombre.Trim(),
-                    Proyecto   = proyecto.Titulo ?? "—",
-                    Asesor     = string.IsNullOrWhiteSpace(asesorNombre) ? "Por asignar" : asesorNombre.Trim()
-                }).ToList();
-
-                if (!rows.Any()) rows.Add(new OficioRevisorRow {
-                    NoControl = "—", Estudiante = "—", Proyecto = proyecto.Titulo ?? "—", Asesor = "—"
-                });
-
-                var asunto = clave == "REVISOR_RESIDENCIA"
-                    ? "Revisor de Residencia Profesional"
-                    : "Revisor de Anteproyecto de Residencia Profesional";
-
-                var pdfName = clave == "REVISOR_RESIDENCIA"
-                    ? "Oficio_RevisorResidencia"
-                    : "Oficio_RevisorAnteproyecto";
-
-                var req = new OficiosAsignacionRevisoresRequest
-                {
-                    Oficio           = numeroOficio,
-                    Asunto           = asunto,
-                    FirmaNombre      = firmaNombre,
-                    FirmaCargoLinea1 = "JEFA(E) DEL DEPARTAMENTO DE SISTEMAS Y COMPUTACIÓN",
-                    Revisores        = new List<OficioRevisorItem>
-                    {
-                        new OficioRevisorItem {
-                            RevisorNombre      = docenteNombre,
-                            RevisorCargoLinea1 = "DOCENTE DEL DEPARTAMENTO DE SISTEMAS Y COMPUTACIÓN",
-                            Rows               = rows
-                        }
-                    }
-                };
-                pdfBytes  = _pdf.BuildOficiosAsignacionRevisores(mem.PdfBytes, req);
-                pdfFileName = $"{pdfName}_{numeroOficio.Replace("/","-")}.pdf";
-            }
-
-            return File(pdfBytes, "application/pdf", pdfFileName);
+        var (pdfBytes, pdfFileName) = await GenerarOficioConsolidadoAsync(docente.Id, clave);
+        return File(pdfBytes, "application/pdf", pdfFileName);
         }
 
                 private int? GetUserIdOrNull()

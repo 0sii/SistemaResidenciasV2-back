@@ -11,3 +11,4 @@ namespace WebApiVinculacionProyectosV2.Models
         public DateOnly FechaInscripcion {  get; set; }
     }
 }
+    

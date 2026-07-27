@@ -152,6 +152,7 @@ C:\Users\osihe\Documentos\WebApiVinculacionProyectosV2-master\WebApiVinculacionP
 C:\Users\osihe\Documentos\WebApiVinculacionProyectosV2-master\WebApiVinculacionProyectosV2-master\webApiVinculacionProyectosV2\obj\Debug\net8.0\WebApiVinculacionProyectosV2.csproj.CoreCompileInputs.cache
 C:\Users\osihe\Documentos\WebApiVinculacionProyectosV2-master\WebApiVinculacionProyectosV2-master\webApiVinculacionProyectosV2\obj\Debug\net8.0\WebApiVinculacionProyectosV2.MvcApplicationPartsAssemblyInfo.cs
 C:\Users\osihe\Documentos\WebApiVinculacionProyectosV2-master\WebApiVinculacionProyectosV2-master\webApiVinculacionProyectosV2\obj\Debug\net8.0\WebApiVinculacionProyectosV2.MvcApplicationPartsAssemblyInfo.cache
+C:\Users\osihe\Documentos\WebApiVinculacionProyectosV2-master\WebApiVinculacionProyectosV2-master\webApiVinculacionProyectosV2\obj\Debug\net8.0\WebApiVinculacionProyectosV2.sourcelink.json
 C:\Users\osihe\Documentos\WebApiVinculacionProyectosV2-master\WebApiVinculacionProyectosV2-master\webApiVinculacionProyectosV2\obj\Debug\net8.0\staticwebassets.build.json
 C:\Users\osihe\Documentos\WebApiVinculacionProyectosV2-master\WebApiVinculacionProyectosV2-master\webApiVinculacionProyectosV2\obj\Debug\net8.0\staticwebassets.development.json
 C:\Users\osihe\Documentos\WebApiVinculacionProyectosV2-master\WebApiVinculacionProyectosV2-master\webApiVinculacionProyectosV2\obj\Debug\net8.0\staticwebassets\msbuild.WebApiVinculacionProyectosV2.Microsoft.AspNetCore.StaticWebAssets.props
@@ -166,4 +167,3 @@ C:\Users\osihe\Documentos\WebApiVinculacionProyectosV2-master\WebApiVinculacionP
 C:\Users\osihe\Documentos\WebApiVinculacionProyectosV2-master\WebApiVinculacionProyectosV2-master\webApiVinculacionProyectosV2\obj\Debug\net8.0\WebApiVinculacionProyectosV2.pdb
 C:\Users\osihe\Documentos\WebApiVinculacionProyectosV2-master\WebApiVinculacionProyectosV2-master\webApiVinculacionProyectosV2\obj\Debug\net8.0\WebApiVinculacionProyectosV2.genruntimeconfig.cache
 C:\Users\osihe\Documentos\WebApiVinculacionProyectosV2-master\WebApiVinculacionProyectosV2-master\webApiVinculacionProyectosV2\obj\Debug\net8.0\ref\WebApiVinculacionProyectosV2.dll
-C:\Users\osihe\Documentos\WebApiVinculacionProyectosV2-master\WebApiVinculacionProyectosV2-master\webApiVinculacionProyectosV2\obj\Debug\net8.0\WebApiVinculacionProyectosV2.sourcelink.json

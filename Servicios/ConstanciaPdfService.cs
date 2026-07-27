@@ -22,7 +22,7 @@ using iText.Layout.Borders;
 using iText.IO.Font;
 using System.Linq;
 
-public interface IConstanciasPdfService
+public partial interface IConstanciasPdfService
 {
     byte[] BuildConstanciaAceptacionReportePreliminar(byte[] templatePdf, ConstanciaAceptacionReportePreliminarRequest req);
 
@@ -33,6 +33,10 @@ public interface IConstanciasPdfService
 
     // ✅ NUEVO: formato “foto” (revisores)
     byte[] BuildOficiosAsignacionRevisoresFormatoFoto(byte[] templatePdf, OficiosAsignacionRevisoresRequest req);
+
+    // ✅ NUEVO: Asignación de revisor de reporte preliminar (rol "revisor de anteproyecto",
+    // distinto de "revisor de residencia" que usa BuildOficiosAsignacionRevisores)
+    byte[] BuildOficioAsignacionRevisorReportePreliminar(byte[] templatePdf, OficioAsignacionRevisorReportePreliminarRequest req);
 }
 
 
@@ -43,12 +47,15 @@ public sealed class OficioAsignacionAsesorInternoRequest
     public string Oficio { get; set; } = "JV-XXX/2025";
 
     public string DestinatarioNombre { get; set; } = "NOMBRE DEL ASESOR";
-    public string DestinatarioCargoLinea1 { get; set; } = "CATEDRÁTICO DEL I.T. DE OAXACA";
+    public string DestinatarioCargoLinea1 { get; set; } = "CATEDRATICO(A) DEL I.T. DE OAXACA";
 
     public string NombreProyecto { get; set; } = "";
     public string Empresa { get; set; } = "";
     public string Carrera { get; set; } = "";
     public string PeriodoRealizacion { get; set; } = ""; // Ej: "FEBRERO - JUNIO 2025"
+
+    // ✅ Número de control del residente (primera fila de la tabla en el formato real)
+    public string NumeroControl { get; set; } = "";
 
     // En el formato dice "Nombre del Residente" (singular), pero en la práctica puede haber equipo:
     public List<string> Residentes { get; set; } = new();
@@ -76,7 +83,7 @@ public sealed class OficiosAsignacionRevisoresRequest
 public sealed class OficioRevisorItem
 {
     public string RevisorNombre { get; set; } = "NOMBRE DEL REVISOR";
-    public string RevisorCargoLinea1 { get; set; } = "DOCENTE DEL DEPARTAMENTO DE SISTEMAS Y COMPUTACIÓN";
+    public string RevisorCargoLinea1 { get; set; } = "CATEDRATICO(A) DEL I.T. DE OAXACA";
 
     // Filas de tabla (para tu caso típico: 1 proyecto por revisor, pero soporta varias)
     public List<OficioRevisorRow> Rows { get; set; } = new();
@@ -95,6 +102,38 @@ public sealed class OficioRevisorRow
     public string Empresa            { get; set; } = "";
     public string Carrera            { get; set; } = "";
     public string PeriodoRealizacion { get; set; } = "";
+}
+
+// ✅ NUEVO: rol "revisor de anteproyecto" — revisa el REPORTE PRELIMINAR de un solo
+// proyecto (con uno o varios estudiantes), distinto del "revisor de residencia"
+// (OficiosAsignacionRevisoresRequest) que revisa varios proyectos a la vez.
+public sealed class RevisorReportePreliminarEstudianteItem
+{
+    public string NumeroControl { get; set; } = "";
+    public string NombreEstudiante { get; set; } = "";
+}
+
+public sealed class OficioAsignacionRevisorReportePreliminarRequest
+{
+    public string Ciudad { get; set; } = "Oaxaca de Juárez, Oaxaca";
+    public DateTime Fecha { get; set; } = DateTime.Today;
+    public string Oficio { get; set; } = "JV-XXX/2026";
+    public string Asunto { get; set; } = "Asignación de revisor de reporte preliminar";
+
+    public string DestinatarioNombre { get; set; } = "NOMBRE DEL REVISOR";
+    public string DestinatarioCargoLinea1 { get; set; } = "CATEDRATICO(A) DEL I.T. DE OAXACA";
+
+    // Numeral del Lineamiento para la Operación de la Residencia Profesional
+    public string NumeralLineamiento { get; set; } = "12.4.1.7";
+
+    public string NombreProyecto { get; set; } = "";
+
+    // Uno o varios estudiantes que presentan el mismo proyecto
+    public List<RevisorReportePreliminarEstudianteItem> Estudiantes { get; set; } = new();
+
+    // Pie de firma (normalmente Subdirección Académica)
+    public string FirmaNombre { get; set; } = "NOMBRE DE QUIEN FIRMA";
+    public string FirmaCargoLinea1 { get; set; } = "SUBDIRECTORA ACADÉMICA";
 }
 
 public sealed class ConstanciaAceptacionReportePreliminarRequest
@@ -131,9 +170,9 @@ public sealed class ConstanciaAceptacionReportePreliminarRequest
     public string AsesorInterno { get; set; } = "";
 }
 
-namespace WebApiVinculacionProyectosV2.Services
-{
-    public class ConstanciasPdfService : IConstanciasPdfService
+ namespace WebApiVinculacionProyectosV2.Services
+ {
+ public partial class ConstanciasPdfService : IConstanciasPdfService    
     {
 
         const float headerSize = 9.6f;
@@ -441,7 +480,7 @@ namespace WebApiVinculacionProyectosV2.Services
                 ? "NOMBRE DEL JEFE(A)"
                 : req.DestinatarioNombre.Trim();
 
-            string jefeCargoFijo = "JEFE(A) DEL DEPARTAMENTO DE INGENIERÍA EN SISTEMAS COMPUTACIONALES";
+            string jefeCargoFijo = "JEFE DEL DEPARTAMENTO DE SISTEMAS Y COMPUTACIÓN";
 
             float left = 72f;
             float right = rect.GetWidth() - 72f;
@@ -482,8 +521,7 @@ namespace WebApiVinculacionProyectosV2.Services
             float cargoY = 231f;
             float presenteY = 248f;
 
-            DrawText("C.", left, destY, fontBold, 9.9f);
-            DrawText(jefeNombre, left + 18f, destY + 1.5f, fontBold, 9.9f);
+            DrawText(jefeNombre, left, destY, fontBold, 9.9f);
             DrawText(jefeCargoFijo, left, cargoY, fontBold, 9.7f);
             DrawText("P R E S E N T E.", left, presenteY, fontBold, 9.7f);
 
@@ -1040,15 +1078,14 @@ namespace WebApiVinculacionProyectosV2.Services
                 // =========================
                 string revisorNombre = CleanReviewerName(rev.RevisorNombre);
                 string revisorCargo = string.IsNullOrWhiteSpace(rev.RevisorCargoLinea1)
-                    ? "DOCENTE DEL DEPARTAMENTO DE SISTEMAS Y COMPUTACIÓN"
+                    ? "CATEDRATICO(A) DEL I.T. DE OAXACA"
                     : rev.RevisorCargoLinea1.Trim();
 
                 float destY = 214f;
                 float cargoY = 231f;
                 float presenteY = 248f;
 
-                DrawText("C.", left, destY, fontBold, 9.9f);
-                DrawText(revisorNombre, left + 18f, destY + 1.5f, fontBold, 9.9f);
+                DrawText(revisorNombre, left, destY, fontBold, 9.9f);
                 DrawText(revisorCargo, left, cargoY, fontBold, 9.7f);
                 DrawText("P R E S E N T E.", left, presenteY, fontBold, 9.7f);
 
@@ -1222,10 +1259,10 @@ namespace WebApiVinculacionProyectosV2.Services
                 }
 
                 float headerBase = tableTop + 15f;
-                DrawCentered("No. control", c1, headerBase, font, headerFont);
-                DrawCentered("Estudiante", c2, headerBase, font, headerFont);
-                DrawCentered("Proyecto", c3, headerBase, font, headerFont);
-                DrawCentered("Asesor", c4, headerBase, font, headerFont);
+                DrawCentered("N° CONTROL:", c1, headerBase, font, headerFont);
+                DrawCentered("ESTUDIANTE", c2, headerBase, font, headerFont);
+                DrawCentered("PROYECTO", c3, headerBase, font, headerFont);
+                DrawCentered("ASESOR", c4, headerBase, font, headerFont);
 
                 float currentTop = tableTop + headerH;
 
@@ -1683,9 +1720,7 @@ DrawText("MMH/mmvh", left, ccp2Y, font, 8.8f);
             float cargoY = 245f;
             float presenteY = 262f;
 
-            DrawText("C.", left, destY, fontBold, destinatarioSize);
-            DrawLine(left + 18f, destY + 3f, left + 250f, destY + 3f, 0.85f);
-            DrawText(destinatario, left + 18f, destY + 1.5f, fontBold, destinatarioSize);
+            DrawText(destinatario, left, destY, fontBold, destinatarioSize);
 
             DrawText(cargoDestinatario, left, cargoY, fontBold, cargoSize);
             DrawText("P R E S E N T E.", left, presenteY, fontBold, cargoSize);
@@ -1711,38 +1746,44 @@ DrawText("MMH/mmvh", left, ccp2Y, font, 8.8f);
             float col1 = 168f;
             float col2 = tableW - col1;
 
+            float r0 = 22f;
             float r1 = 26f;
             float r2 = 24f;
             float r3 = 46f;
             float r4 = 24f;
             float r5 = 24f;
-            float tableH = r1 + r2 + r3 + r4 + r5;
+            float tableH = r0 + r1 + r2 + r3 + r4 + r5;
 
             DrawRect(tableX, tableTop, tableW, tableH, 0.85f);
             DrawLine(tableX + col1, tableTop, tableX + col1, tableTop + tableH, 0.85f);
 
             float y = tableTop;
+            y += r0; DrawLine(tableX, y, tableX + tableW, y, 0.85f);
             y += r1; DrawLine(tableX, y, tableX + tableW, y, 0.85f);
             y += r2; DrawLine(tableX, y, tableX + tableW, y, 0.85f);
             y += r3; DrawLine(tableX, y, tableX + tableW, y, 0.85f);
             y += r4; DrawLine(tableX, y, tableX + tableW, y, 0.85f);
 
             float labelSize = tableSize;
-            DrawText("Nombre  del  Residente:", tableX + 6f, tableTop + 16f, font, labelSize);
-            DrawText("Carrera:", tableX + 6f, tableTop + r1 + 15.5f, font, labelSize);
-            DrawText("Nombre del Proyecto:", tableX + 6f, tableTop + r1 + r2 + 16f, font, labelSize);
-            DrawText("Periodo de Realización", tableX + 6f, tableTop + r1 + r2 + r3 + 15.5f, font, labelSize);
-            DrawText("Empresa", tableX + 6f, tableTop + r1 + r2 + r3 + r4 + 15.5f, font, labelSize);
+            string numeroControl = (req.NumeroControl ?? "").Trim();
+
+            DrawText("Número de control:", tableX + 6f, tableTop + 15.5f, font, labelSize);
+            DrawText("Nombre del residente:", tableX + 6f, tableTop + r0 + 16f, font, labelSize);
+            DrawText("Carrera:", tableX + 6f, tableTop + r0 + r1 + 15.5f, font, labelSize);
+            DrawText("Nombre del proyecto:", tableX + 6f, tableTop + r0 + r1 + r2 + 16f, font, labelSize);
+            DrawText("Período de realización:", tableX + 6f, tableTop + r0 + r1 + r2 + r3 + 15.5f, font, labelSize);
+            DrawText("Empresa:", tableX + 6f, tableTop + r0 + r1 + r2 + r3 + r4 + 15.5f, font, labelSize);
 
             float valX = tableX + col1;
             float valW = col2;
             float cellFont = tableSize;
 
-            DrawWrappedInBox(residenteTexto, valX, tableTop, valW, r1, font, cellFont);
-            DrawWrappedInBox(carrera, valX, tableTop + r1, valW, r2, font, cellFont);
-            DrawWrappedInBox(proyecto, valX, tableTop + r1 + r2, valW, r3, font, cellFont);
-            DrawWrappedInBox(periodo, valX, tableTop + r1 + r2 + r3, valW, r4, font, cellFont);
-            DrawWrappedInBox(empresa, valX, tableTop + r1 + r2 + r3 + r4, valW, r5, font, cellFont);
+            DrawWrappedInBox(numeroControl, valX, tableTop, valW, r0, font, cellFont);
+            DrawWrappedInBox(residenteTexto, valX, tableTop + r0, valW, r1, font, cellFont);
+            DrawWrappedInBox(carrera, valX, tableTop + r0 + r1, valW, r2, font, cellFont);
+            DrawWrappedInBox(proyecto, valX, tableTop + r0 + r1 + r2, valW, r3, font, cellFont);
+            DrawWrappedInBox(periodo, valX, tableTop + r0 + r1 + r2 + r3, valW, r4, font, cellFont);
+            DrawWrappedInBox(empresa, valX, tableTop + r0 + r1 + r2 + r3 + r4, valW, r5, font, cellFont);
 
             // =========================
             // Párrafos debajo de la tabla
@@ -1808,6 +1849,439 @@ DrawText("MMH/mmvh", left, ccp2Y, font, 8.8f);
             pdf.Close();
             return output.ToArray();
         }
+        public byte[] BuildOficioAsignacionRevisorReportePreliminar(byte[] templatePdf, OficioAsignacionRevisorReportePreliminarRequest req)
+        {
+            if (req == null) throw new ArgumentNullException(nameof(req));
+
+            using var output = new MemoryStream();
+            using var writer = new PdfWriter(output);
+            using var pdf = new PdfDocument(writer);
+
+            PdfPage page;
+
+            if (templatePdf != null && templatePdf.Length > 0)
+            {
+                using var templateStream = new MemoryStream(templatePdf);
+                using var reader = new PdfReader(templateStream);
+                using var src = new PdfDocument(reader);
+
+                page = src.GetFirstPage().CopyTo(pdf);
+                pdf.AddPage(page);
+            }
+            else
+            {
+                page = pdf.AddNewPage(PageSize.LETTER);
+            }
+
+            var rect = page.GetPageSizeWithRotation();
+            var canvas = new PdfCanvas(page);
+
+            // ── Compensar flip vertical del membrete escaneado ───────────────
+            {
+                var pageRotation = page.GetRotation();
+                bool hasYFlip = false;
+
+                if (pageRotation == 0)
+                {
+                    try
+                    {
+                        var pageDict = page.GetPdfObject();
+                        var contentsObj = pageDict.Get(iText.Kernel.Pdf.PdfName.Contents);
+                        iText.Kernel.Pdf.PdfStream? firstStream = null;
+
+                        if (contentsObj is iText.Kernel.Pdf.PdfArray arr && arr.Size() > 0)
+                            firstStream = arr.GetAsStream(0);
+                        else if (contentsObj is iText.Kernel.Pdf.PdfStream s)
+                            firstStream = s;
+
+                        if (firstStream != null)
+                        {
+                            var bytes = firstStream.GetBytes();
+                            var preview = System.Text.Encoding.Latin1.GetString(bytes, 0,
+                                Math.Min(bytes.Length, 80));
+                            hasYFlip = System.Text.RegularExpressions.Regex.IsMatch(
+                                preview, @"1\s+0\s+0\s+-1\s+0\s+[\d.]+\s+cm");
+                        }
+                    }
+                    catch { /* si falla la detección, no aplicamos nada */ }
+                }
+
+                float w = rect.GetWidth();
+                float h = rect.GetHeight();
+
+                if (hasYFlip)
+                    canvas.ConcatMatrix(1, 0, 0, -1, 0, h);
+                else if (pageRotation == 90)
+                    canvas.ConcatMatrix(0, 1, -1, 0, h, 0);
+                else if (pageRotation == 180)
+                    canvas.ConcatMatrix(-1, 0, 0, -1, w, h);
+                else if (pageRotation == 270)
+                    canvas.ConcatMatrix(0, -1, 1, 0, 0, w);
+            }
+            // ────────────────────────────────────────────────────────────────
+
+            PdfFont font = LoadFontFromCandidates(
+                System.IO.Path.Combine(AppContext.BaseDirectory, "Fonts", "NotoSans-Regular.ttf"),
+                System.IO.Path.Combine(Directory.GetCurrentDirectory(), "Fonts", "NotoSans-Regular.ttf")
+            );
+
+            PdfFont fontBold = LoadFontFromCandidates(
+                System.IO.Path.Combine(AppContext.BaseDirectory, "Fonts", "NotoSans-Bold.ttf"),
+                System.IO.Path.Combine(Directory.GetCurrentDirectory(), "Fonts", "NotoSans-Bold.ttf")
+            );
+
+            var esMx = CultureInfo.GetCultureInfo("es-MX");
+
+            float Y(float yFromTop) => rect.GetHeight() - yFromTop;
+
+            void DrawText(string text, float x, float yFromTopBaseline, PdfFont f, float size)
+            {
+                canvas.BeginText();
+                canvas.SetFontAndSize(f, size);
+                canvas.MoveText(x, Y(yFromTopBaseline));
+                canvas.ShowText(text ?? "");
+                canvas.EndText();
+            }
+
+            void DrawTextRight(string text, float rightX, float yFromTopBaseline, PdfFont f, float size)
+            {
+                text ??= "";
+                float textWidth = f.GetWidth(text, size);
+                DrawText(text, rightX - textWidth, yFromTopBaseline, f, size);
+            }
+
+            void DrawMixedRight(
+                string leftText, PdfFont leftFont, float leftSize,
+                string rightText, PdfFont rightFont, float rightSize,
+                float rightX, float yFromTopBaseline, float gap = 3f)
+            {
+                leftText ??= "";
+                rightText ??= "";
+
+                float leftWidth = leftFont.GetWidth(leftText, leftSize);
+                float rightWidth = rightFont.GetWidth(rightText, rightSize);
+
+                float startX = rightX - (leftWidth + gap + rightWidth);
+
+                DrawText(leftText, startX, yFromTopBaseline, leftFont, leftSize);
+                DrawText(rightText, startX + leftWidth + gap, yFromTopBaseline, rightFont, rightSize);
+            }
+
+            void DrawLine(float x1, float yFromTop, float x2, float y2FromTop, float width = 0.85f)
+            {
+                canvas.SaveState();
+                canvas.SetLineWidth(width);
+                canvas.MoveTo(x1, Y(yFromTop));
+                canvas.LineTo(x2, Y(y2FromTop));
+                canvas.Stroke();
+                canvas.RestoreState();
+            }
+
+            void DrawRect(float x, float yFromTopTop, float w, float h, float lineWidth = 0.85f)
+            {
+                canvas.SaveState();
+                canvas.SetLineWidth(lineWidth);
+                canvas.Rectangle(x, Y(yFromTopTop + h), w, h);
+                canvas.Stroke();
+                canvas.RestoreState();
+            }
+
+            void DrawCentered(string text, (float x0, float x1) col, float yFromTopBaseline, PdfFont f, float size)
+            {
+                text ??= "";
+                float w = col.x1 - col.x0;
+                float tw = f.GetWidth(text, size);
+                float x = col.x0 + (w - tw) / 2f;
+                DrawText(text, x, yFromTopBaseline, f, size);
+            }
+
+            // ── Párrafo con segmentos en negritas usando marcadores **texto** ──
+            List<(string word, bool bold)> TokenizeBold(string markedText)
+            {
+                markedText ??= "";
+                var parts = markedText.Split(new[] { "**" }, StringSplitOptions.None);
+                var words = new List<(string, bool)>();
+                for (int i = 0; i < parts.Length; i++)
+                {
+                    bool bold = (i % 2 == 1);
+                    foreach (var w in parts[i].Split(' ', StringSplitOptions.RemoveEmptyEntries))
+                        words.Add((w, bold));
+                }
+                return words;
+            }
+
+            // Dibuja el párrafo envuelto (izquierda) y regresa el Y (desde arriba) donde terminó
+            float DrawMixedParagraph(string markedText, float x, float topBaseline, float maxWidth, float size, float leading)
+            {
+                var words = TokenizeBold(markedText);
+                float spaceWidth = font.GetWidth(" ", size);
+
+                var lines = new List<List<(string word, bool bold)>>();
+                var currentLine = new List<(string word, bool bold)>();
+                float currentWidth = 0f;
+
+                foreach (var (word, bold) in words)
+                {
+                    var f = bold ? fontBold : font;
+                    float wWidth = f.GetWidth(word, size);
+                    float testWidth = currentWidth + (currentLine.Count > 0 ? spaceWidth : 0) + wWidth;
+
+                    if (testWidth > maxWidth && currentLine.Count > 0)
+                    {
+                        lines.Add(currentLine);
+                        currentLine = new List<(string, bool)> { (word, bold) };
+                        currentWidth = wWidth;
+                    }
+                    else
+                    {
+                        currentLine.Add((word, bold));
+                        currentWidth = testWidth;
+                    }
+                }
+                if (currentLine.Count > 0) lines.Add(currentLine);
+
+                for (int i = 0; i < lines.Count; i++)
+                {
+                    float cursorX = x;
+                    float yBase = topBaseline + (i * leading);
+                    foreach (var (word, bold) in lines[i])
+                    {
+                        var f = bold ? fontBold : font;
+                        DrawText(word, cursorX, yBase, f, size);
+                        cursorX += f.GetWidth(word, size) + spaceWidth;
+                    }
+                }
+
+                return topBaseline + (Math.Max(1, lines.Count) - 1) * leading;
+            }
+
+            List<string> WrapLines(string text, PdfFont f, float size, float maxWidth)
+            {
+                text ??= "";
+                var words = text.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                var lines = new List<string>();
+                string line = "";
+
+                foreach (var w in words)
+                {
+                    var test = string.IsNullOrEmpty(line) ? w : $"{line} {w}";
+                    if (f.GetWidth(test, size) > maxWidth && !string.IsNullOrEmpty(line))
+                    {
+                        lines.Add(line);
+                        line = w;
+                    }
+                    else
+                    {
+                        line = test;
+                    }
+                }
+
+                if (!string.IsNullOrEmpty(line))
+                    lines.Add(line);
+
+                return lines;
+            }
+
+            string TruncateWithEllipsis(string text, PdfFont f, float size, float maxWidth)
+            {
+                text ??= "";
+                const string ell = "…";
+                if (f.GetWidth(text, size) <= maxWidth) return text;
+
+                var t = text;
+                while (t.Length > 0 && f.GetWidth(t + ell, size) > maxWidth)
+                    t = t.Substring(0, t.Length - 1);
+
+                return t.Length == 0 ? "" : (t + ell);
+            }
+
+            List<string> WrapLinesMax(string text, PdfFont f, float size, float maxWidth, int maxLines)
+            {
+                var lines = WrapLines(text, f, size, maxWidth);
+                if (lines.Count <= maxLines) return lines;
+
+                string last = lines[maxLines - 1];
+                for (int i = maxLines; i < lines.Count; i++)
+                    last += " " + lines[i];
+
+                var result = lines.Take(maxLines - 1).ToList();
+                result.Add(TruncateWithEllipsis(last, f, size, maxWidth));
+                return result;
+            }
+
+            // -------------------------
+            // Datos normalizados
+            // -------------------------
+            string ciudad = string.IsNullOrWhiteSpace(req.Ciudad) ? "Oaxaca de Juárez, Oaxaca" : req.Ciudad.Trim();
+            string oficio = string.IsNullOrWhiteSpace(req.Oficio) ? "__________" : req.Oficio.Trim();
+            string asunto = string.IsNullOrWhiteSpace(req.Asunto) ? "Asignación de revisor de reporte preliminar" : req.Asunto.Trim();
+            string numeral = string.IsNullOrWhiteSpace(req.NumeralLineamiento) ? "12.4.1.7" : req.NumeralLineamiento.Trim();
+            string proyecto = (req.NombreProyecto ?? "").Trim().ToUpperInvariant();
+            string destinatario = (req.DestinatarioNombre ?? "").Trim();
+            string cargoDestinatario = string.IsNullOrWhiteSpace(req.DestinatarioCargoLinea1)
+                ? "CATEDRATICO(A) DEL I.T. DE OAXACA"
+                : req.DestinatarioCargoLinea1.Trim();
+            var estudiantes = req.Estudiantes ?? new List<RevisorReportePreliminarEstudianteItem>();
+
+            float left = 72f;
+            float right = rect.GetWidth() - 72f;
+            float bodyW = right - left;
+
+            // =========================
+            // Encabezado derecho
+            // =========================
+            string fechaSolo = req.Fecha.ToString("dd 'de' MMMM 'de' yyyy", esMx).ToLower(esMx);
+            string ciudadPrefix = $"{ciudad} ";
+
+            float fechaY = 140f;
+            float oficioY = 154f;
+            float asuntoY = 168f;
+
+            float ciudadWidth = font.GetWidth(ciudadPrefix, headerSize);
+            float fechaWidth = font.GetWidth(fechaSolo, headerSize);
+            float fechaStartX = right - (ciudadWidth + fechaWidth);
+
+            DrawText(ciudadPrefix, fechaStartX, fechaY, font, headerSize);
+            DrawText(fechaSolo, fechaStartX + ciudadWidth, fechaY, font, headerSize);
+
+            DrawTextRight($"OFICIO No. {oficio}", right, oficioY, fontBold, oficioSize);
+
+            DrawMixedRight(
+                "ASUNTO:",
+                font,
+                asuntoLabelSize,
+                asunto,
+                fontBold,
+                asuntoValueSize,
+                right,
+                asuntoY,
+                4f
+            );
+
+            // =========================
+            // Destinatario
+            // =========================
+            float destY = 214f;
+            float cargoY = 231f;
+            float presenteY = 248f;
+
+            DrawText(destinatario, left, destY, fontBold, destinatarioSize);
+            DrawText(cargoDestinatario, left, cargoY, fontBold, cargoSize);
+            DrawText("P R E S E N T E", left, presenteY, fontBold, cargoSize);
+
+            // =========================
+            // Párrafo 1: fundamento legal
+            // =========================
+            string p1 =
+                $"Con fundamento en el **Lineamiento para la Operación de la Residencia Profesional**, específicamente " +
+                $"atendiendo al **numeral {numeral}**, el cual establece que todo proyecto debe ser autorizado por la " +
+                $"Jefatura del Departamento Académico previo análisis de la Academia, se le comunica lo siguiente:";
+
+            float p1Top = 280f;
+            float bodySizeLocal = bodySize;
+            float leadingLocal = bodyLeading + 1f;
+
+            float p1End = DrawMixedParagraph(p1, left, p1Top, bodyW, bodySizeLocal, leadingLocal);
+
+            // =========================
+            // Párrafo 2: designación como revisor + proyecto
+            // =========================
+            string p2 =
+                $"Se le ha designado como **Revisor(a)** para evaluar el reporte preliminar del proyecto para " +
+                $"Residencia Profesional: **{proyecto}**, el cual presentan los estudiantes:";
+
+            float p2Top = p1End + leadingLocal + 10f;
+            float p2End = DrawMixedParagraph(p2, left, p2Top, bodyW, bodySizeLocal, leadingLocal);
+
+            // =========================
+            // Tabla: Número de control | Estudiante
+            // =========================
+            float tableTop = p2End + leadingLocal + 16f;
+            float tableLeft = left;
+            float tableWidth = bodyW;
+            float wCol1 = 150f;
+            float wCol2 = tableWidth - wCol1;
+
+            (float x0, float x1) c1 = (tableLeft, tableLeft + wCol1);
+            (float x0, float x1) c2 = (c1.x1, tableLeft + tableWidth);
+
+            float headerH = 20f;
+            float rowH = 20f;
+            float tableH = headerH + (rowH * Math.Max(1, estudiantes.Count));
+
+            DrawRect(tableLeft, tableTop, tableWidth, tableH, 0.85f);
+            DrawLine(tableLeft, tableTop + headerH, tableLeft + tableWidth, tableTop + headerH, 0.85f);
+            DrawLine(c1.x1, tableTop, c1.x1, tableTop + tableH, 0.85f);
+
+            float headerBase = tableTop + 14f;
+            DrawCentered("Número de control", c1, headerBase, fontBold, tableSize);
+            DrawCentered("Estudiante", c2, headerBase, fontBold, tableSize);
+
+            for (int i = 0; i < estudiantes.Count; i++)
+            {
+                float rowTop = tableTop + headerH + (i * rowH);
+                if (i > 0)
+                    DrawLine(tableLeft, rowTop, tableLeft + tableWidth, rowTop, 0.85f);
+
+                float rowBase = rowTop + 14f;
+                DrawCentered(estudiantes[i].NumeroControl ?? "", c1, rowBase, font, tableSize);
+                DrawText(estudiantes[i].NombreEstudiante ?? "", c2.x0 + 8f, rowBase, font, tableSize);
+            }
+
+            // =========================
+            // Párrafos de cierre
+            // =========================
+            float afterTableY = tableTop + tableH + 20f;
+
+            string p3 =
+                "Su análisis técnico permitirá a la Academia determinar la viabilidad y pertinencia del proyecto para su " +
+                "posterior autorización por esta Jefatura.";
+            var p3Lines = WrapLinesMax(p3, font, bodySizeLocal, bodyW, 3);
+            for (int i = 0; i < p3Lines.Count; i++)
+                DrawText(p3Lines[i], left, afterTableY + (i * leadingLocal), font, bodySizeLocal);
+
+            float p4Top = afterTableY + (p3Lines.Count * leadingLocal) + 10f;
+            string p4 =
+                "En caso de autorizar el proyecto, deberá entregar a la oficina de Vinculación el **Anexo II**, por cada " +
+                "estudiante asignado.";
+            float p4End = DrawMixedParagraph(p4, left, p4Top, bodyW, bodySizeLocal, leadingLocal);
+
+            float p5Top = p4End + leadingLocal + 10f;
+            string p5 = "Agradezco de antemano su valiosa colaboración en este proceso.";
+            var p5Lines = WrapLinesMax(p5, font, bodySizeLocal, bodyW, 2);
+            for (int i = 0; i < p5Lines.Count; i++)
+                DrawText(p5Lines[i], left, p5Top + (i * leadingLocal), font, bodySizeLocal);
+
+            // =========================
+            // Firma
+            // =========================
+            float maxAllowed = rect.GetHeight() - 88f;
+            float atentamenteY = Math.Max(p5Top + (p5Lines.Count * leadingLocal) + 40f, 620f);
+            float firmaNombreY = atentamenteY + 70f;
+            float firmaCargoY = firmaNombreY + 15f;
+            float ccpY = firmaCargoY + 28f;
+
+            float lastLineY = ccpY + 12f;
+            float overflow = lastLineY - maxAllowed;
+            if (overflow > 0)
+            {
+                atentamenteY -= overflow;
+                firmaNombreY -= overflow;
+                firmaCargoY -= overflow;
+                ccpY -= overflow;
+            }
+
+            DrawText("Atentamente", left, atentamenteY, fontBold, signSize);
+            DrawText((req.FirmaNombre ?? "").Trim(), left, firmaNombreY, fontBold, signSize);
+            DrawText((req.FirmaCargoLinea1 ?? "").Trim(), left, firmaCargoY, fontBold, 9.8f);
+
+            DrawText("ccp. Expediente", left, ccpY, font, smallSize);
+            DrawText("ICMO/mmvh", left, ccpY + 12f, font, smallSize);
+
+            pdf.Close();
+            return output.ToArray();
+        }
+
         public byte[] BuildOficiosAsignacionRevisoresFormatoFoto(byte[] templatePdf, OficiosAsignacionRevisoresRequest req)
         {
             if (req == null) throw new ArgumentNullException(nameof(req));
@@ -1938,6 +2412,52 @@ DrawText("MMH/mmvh", left, ccp2Y, font, 8.8f);
                     float Y(float yFromTop) => pageH - yFromTop;
 
                     var pdfCanvas = new PdfCanvas(page);
+
+                    // ✅ FIX: esta era la única variante de Build* sin compensación de
+                    // flip vertical. El membrete escaneado trae "1 0 0 -1 0 h cm" en su
+                    // propio content stream (se auto-corrige al verse), pero el texto que
+                    // dibujamos encima NO tenía esa misma compensación, así que quedaba
+                    // al revés respecto al membrete. Se replica la misma detección que
+                    // usan BuildOficiosAsignacionRevisores / BuildOficioAsignacionAsesorInterno / etc.
+                    {
+                        var pageRotation = page.GetRotation();
+                        bool hasYFlip = false;
+
+                        if (pageRotation == 0)
+                        {
+                            try
+                            {
+                                var pageDict = page.GetPdfObject();
+                                var contentsObj = pageDict.Get(iText.Kernel.Pdf.PdfName.Contents);
+                                iText.Kernel.Pdf.PdfStream? firstStream = null;
+
+                                if (contentsObj is iText.Kernel.Pdf.PdfArray arr && arr.Size() > 0)
+                                    firstStream = arr.GetAsStream(0);
+                                else if (contentsObj is iText.Kernel.Pdf.PdfStream s)
+                                    firstStream = s;
+
+                                if (firstStream != null)
+                                {
+                                    var bytes = firstStream.GetBytes();
+                                    var preview = System.Text.Encoding.Latin1.GetString(bytes, 0,
+                                        Math.Min(bytes.Length, 80));
+                                    hasYFlip = System.Text.RegularExpressions.Regex.IsMatch(
+                                        preview, @"1\s+0\s+0\s+-1\s+0\s+[\d.]+\s+cm");
+                                }
+                            }
+                            catch { /* si falla la detección, no aplicamos nada */ }
+                        }
+
+                        if (hasYFlip)
+                            pdfCanvas.ConcatMatrix(1, 0, 0, -1, 0, pageH);
+                        else if (pageRotation == 90)
+                            pdfCanvas.ConcatMatrix(0, 1, -1, 0, pageH, 0);
+                        else if (pageRotation == 180)
+                            pdfCanvas.ConcatMatrix(-1, 0, 0, -1, pageW, pageH);
+                        else if (pageRotation == 270)
+                            pdfCanvas.ConcatMatrix(0, -1, 1, 0, 0, pageW);
+                    }
+
                     var canvas = new iText.Layout.Canvas(pdfCanvas, ps);
 
                     void AbsText(string text, float x, float yFromTop, PdfFont f, float size, TextAlignment align)
@@ -2059,10 +2579,10 @@ DrawText("MMH/mmvh", left, ccp2Y, font, 8.8f);
                     }
 
                     // header
-                    table.AddHeaderCell(MakeCell("N° control:", bold: true, header: true, height: headerH));
-                    table.AddHeaderCell(MakeCell("Estudiante", bold: true, header: true, height: headerH));
-                    table.AddHeaderCell(MakeCell("Proyecto", bold: true, header: true, height: headerH));
-                    table.AddHeaderCell(MakeCell("Asesor", bold: true, header: true, height: headerH));
+                    table.AddHeaderCell(MakeCell("N° CONTROL:", bold: true, header: true, height: headerH));
+                    table.AddHeaderCell(MakeCell("ESTUDIANTE", bold: true, header: true, height: headerH));
+                    table.AddHeaderCell(MakeCell("PROYECTO", bold: true, header: true, height: headerH));
+                    table.AddHeaderCell(MakeCell("ASESOR", bold: true, header: true, height: headerH));
 
                     // rows
                     foreach (var r in takeRows)

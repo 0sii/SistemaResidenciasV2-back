@@ -1196,7 +1196,7 @@ namespace WebApiVinculacionProyectosV2.Migrations
                         .IsUnique()
                         .HasDatabaseName("IX_ProyectoDocente_idProyecto_IdTipoRelacion_idDocente");
 
-                    b.ToTable("ProyectoDocente", (string)null);
+                    b.ToTable("proyectodocente", (string)null);
                 });
 
             modelBuilder.Entity("WebApiVinculacionProyectosV2.Models.ProyectoDocumento", b =>
