@@ -6,6 +6,8 @@ using WebApiVinculacionProyectosV2.Models;
 using Microsoft.AspNetCore.Authorization;
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
+using WebApiVinculacionProyectosV2.Servicios;
+using WebApiVinculacionProyectosV2.Services;
 
 
 public class EntregableEstadoDto
@@ -37,12 +39,16 @@ namespace WebApiVinculacionProyectosV2.Controllers
         private readonly ResidenciasDbContext _db;
         private readonly IWebHostEnvironment _env;
         private readonly INotificacionesService _notificaciones;
+        private readonly IConstanciasPdfService _pdf;
+        private readonly IServicioEmail _email;
 
-        public EntregablesController(ResidenciasDbContext db, IWebHostEnvironment env, INotificacionesService notificaciones)
+        public EntregablesController(ResidenciasDbContext db, IWebHostEnvironment env, INotificacionesService notificaciones, IConstanciasPdfService pdf, IServicioEmail email)
         {
             _db = db;
             _env = env;
             _notificaciones = notificaciones;
+            _pdf = pdf;
+            _email = email;
         }
 
         private static readonly Dictionary<string, int> EstadoEntregableMap = new()
@@ -281,13 +287,10 @@ namespace WebApiVinculacionProyectosV2.Controllers
             var proyecto = await _db.Proyectos.FirstOrDefaultAsync(p => p.Id == idProyecto);
             if (proyecto == null) return NotFound("Proyecto no existe.");
 
-            // ✅ opcional pero recomendado: solo si está en etapa de revisión de anteproyecto
             if (proyecto.idEstado != 5)
                 return Conflict("El anteproyecto no ha sido revisado.");
 
-           
-
-            // 4) buscar entregable ANTEPROYECTO (por TipoEntregable.Descripcion)
+            // 3) buscar entregable ANTEPROYECTO aprobado
             var anteTipoId = await _db.TipoEntregables
                 .Where(t => t.Activo && t.Descripcion.ToUpper() == "ANTEPROYECTO")
                 .Select(t => t.Id)
@@ -299,15 +302,392 @@ namespace WebApiVinculacionProyectosV2.Controllers
                 .FirstOrDefaultAsync(e => e.IdProyecto == idProyecto && e.IdTipoEntregable == anteTipoId);
 
             if (ante == null) return Conflict("Este proyecto aún no tiene entregable de anteproyecto.");
-
             if (ante.IdEstadoEntregable != 4)
                 return Conflict("No puedes aceptar: el anteproyecto no está APROBADO.");
 
-            // 5) avanzar estado
-            proyecto.idEstado = 6; // Espera asignando asesor
+            // 4) Avanzar estado del proyecto
+            proyecto.idEstado = 6;
             await _db.SaveChangesAsync();
 
-            return Ok(new { ok = true, estadoNuevo = proyecto.idEstado });
+            // ─────────────────────────────────────────────────────────────────
+            // 5) Generar PDF de Aceptación de Reporte Preliminar
+            // ─────────────────────────────────────────────────────────────────
+            string? rutaFisicaPdf = null;
+            string? nombreArchivoPdf = null;
+
+            try
+            {
+                // Datos del asesor interno (el que llama a este endpoint)
+                var docenteRevisor = await _db.Docentes.AsNoTracking()
+                    .FirstOrDefaultAsync(d => d.idUsuario == idUsuario);
+
+                var asesorNombre = docenteRevisor != null
+                    ? $"{docenteRevisor.Nombre} {docenteRevisor.ApellidoPaterno} {docenteRevisor.ApellidoMaterno}".Trim()
+                    : "Asesor Interno";
+
+                // Datos del estudiante
+                var estRaw = await _db.Estudiantes.AsNoTracking()
+                    .Where(e => e.idProyecto == idProyecto)
+                    .Select(e => new {
+                        e.noControl,
+                        Nombre = (e.Nombre ?? "") + " " + (e.ApellidoPaterno ?? "") + " " + (e.ApellidoMaterno ?? ""),
+                        e.idcarrera,
+                        e.correoPersonal,
+                        CorreoInst = _db.Usuarios.Where(u => u.Id == e.idUsuario).Select(u => u.Correo).FirstOrDefault()
+                    })
+                    .FirstOrDefaultAsync();
+
+                // Carrera
+                string carreraNombre = "—";
+                if (estRaw?.idcarrera != null)
+                {
+                    carreraNombre = await _db.Carreras.AsNoTracking()
+                        .Where(c => c.Id == estRaw.idcarrera)
+                        .Select(c => c.Descripcion)
+                        .FirstOrDefaultAsync() ?? "—";
+                }
+
+                // Fechas del proyecto
+                string fechaInicio = "—";
+                string fechaTermino = "—";
+                if (proyecto.HorarioInicio.HasValue)
+                    fechaInicio = proyecto.HorarioInicio.Value.ToString("dd/MM/yyyy");
+                if (proyecto.HorarioFinal.HasValue)
+                    fechaTermino = proyecto.HorarioFinal.Value.ToString("dd/MM/yyyy");
+
+                // Membretado del periodo
+                byte[]? membretePdf = null;
+                if (proyecto.IdPeriodoAcademico.HasValue)
+                {
+                    var mem = await _db.PeriodosMembrentados.AsNoTracking()
+                        .OrderByDescending(x => x.Id)
+                        .FirstOrDefaultAsync(x => x.PeriodoAcademicoId == proyecto.IdPeriodoAcademico);
+                    membretePdf = mem?.PdfBytes;
+                }
+
+                // Número de oficio del periodo activo
+                string numeroOficio = "JV-000/00";
+                if (proyecto.IdPeriodoAcademico.HasValue)
+                {
+                    var periodoUpd = await _db.PeriodosAcademicos
+                        .FirstOrDefaultAsync(p => p.Id == proyecto.IdPeriodoAcademico);
+                    if (periodoUpd != null)
+                    {
+                        numeroOficio = $"{periodoUpd.PrefijoOficio}-{periodoUpd.ConsecutivoOficio:000}/{DateTime.Today.Year % 100:00}";
+                        periodoUpd.ConsecutivoOficio++;
+                        await _db.SaveChangesAsync();
+                    }
+                }
+
+                // Nombre del jefe de departamento
+                string destinatarioNombre = "JEFE DEL DEPARTAMENTO DE SISTEMAS Y COMPUTACIÓN";
+                if (proyecto.IdPeriodoAcademico.HasValue)
+                {
+                    var periodo = await _db.PeriodosAcademicos.AsNoTracking()
+                        .FirstOrDefaultAsync(p => p.Id == proyecto.IdPeriodoAcademico);
+                    if (!string.IsNullOrWhiteSpace(periodo?.JefeDepartamentoNombre))
+                        destinatarioNombre = periodo.JefeDepartamentoNombre.Trim().ToUpperInvariant();
+                }
+
+                // Construir solicitud PDF
+                var req = new ConstanciaAceptacionReportePreliminarRequest
+                {
+                    Fecha = DateTime.Today,
+                    Oficio = numeroOficio,
+                    DestinatarioNombre = destinatarioNombre,
+                    Carrera = carreraNombre,
+                    NoControl = estRaw?.noControl ?? "—",
+                    Estudiante = estRaw?.Nombre.Trim() ?? "—",
+                    TituloReporte = proyecto.Titulo ?? "—",
+                    FechaInicio = fechaInicio,
+                    FechaTermino = fechaTermino,
+                    Dictamen = "APROBADO",
+                    Comentarios = "",
+                    AsesorInterno = asesorNombre
+                };
+
+                var pdfBytes = _pdf.BuildConstanciaAceptacionReportePreliminar(membretePdf ?? Array.Empty<byte>(), req);
+
+                // ── Guardar en disco como ProyectoDocumento ──────────────────
+                var carpeta = Path.Combine(_env.ContentRootPath, "uploads", "proyectos", idProyecto.ToString(), "aceptacion");
+                Directory.CreateDirectory(carpeta);
+
+                nombreArchivoPdf = $"Aceptacion_Anteproyecto_{idProyecto}_{DateTime.Now:yyyyMMddHHmmss}.pdf";
+                var rutaCompleta = Path.Combine(carpeta, nombreArchivoPdf);
+                await System.IO.File.WriteAllBytesAsync(rutaCompleta, pdfBytes);
+
+                rutaFisicaPdf = Path.Combine("uploads", "proyectos", idProyecto.ToString(), "aceptacion", nombreArchivoPdf)
+                    .Replace(Path.DirectorySeparatorChar, '/');
+
+                // Registrar en BD
+                _db.ProyectoDocumentos.Add(new ProyectoDocumento
+                {
+                    IdProyecto = idProyecto,
+                    NombreOriginal = $"Aceptacion_Anteproyecto_{idProyecto}.pdf",
+                    NombreServidor = nombreArchivoPdf,
+                    TamanoBytes = pdfBytes.Length,
+                    ContentType = "application/pdf",
+                    RutaFisica = rutaFisicaPdf,
+                    FechaSubida = DateTime.UtcNow,
+                    UploadedByUserId = idUsuario
+                });
+                await _db.SaveChangesAsync();
+
+                // ── Enviar por correo ─────────────────────────────────────────
+                var asunto = $"Aceptación de Anteproyecto · {proyecto.Titulo ?? $"Proyecto #{idProyecto}"}";
+                var cuerpoHtml = $@"
+<p>El anteproyecto del proyecto <b>{System.Net.WebUtility.HtmlEncode(proyecto.Titulo ?? $"Proyecto #{idProyecto}")}</b> ha sido <b>aceptado</b>.</p>
+<ul>
+  <li><b>Estudiante:</b> {System.Net.WebUtility.HtmlEncode(estRaw?.Nombre.Trim() ?? "—")} ({System.Net.WebUtility.HtmlEncode(estRaw?.noControl ?? "—")})</li>
+  <li><b>Asesor interno:</b> {System.Net.WebUtility.HtmlEncode(asesorNombre)}</li>
+  <li><b>Fecha:</b> {DateTime.Today:dd/MM/yyyy}</li>
+</ul>
+<p>Se adjunta el documento de aceptación. También puedes descargarlo desde la plataforma.</p>";
+
+                // Destinatarios: docente asesor + jefa(s) de vinculación (rol 4)
+                const int ROL_JEFE_VINCULACION = 4;
+                var correosVinculacion = await (
+                    from ur in _db.UsuarioRol.AsNoTracking()
+                    join u in _db.Usuarios.AsNoTracking() on ur.IdUsuario equals u.Id
+                    where ur.IdRol == ROL_JEFE_VINCULACION && !string.IsNullOrEmpty(u.Correo)
+                    select u.Correo
+                ).Distinct().ToListAsync();
+
+                var todosCorreos = new List<string>();
+                if (docenteRevisor != null)
+                {
+                    var correoDocente = await _db.Usuarios.AsNoTracking()
+                        .Where(u => u.Id == docenteRevisor.idUsuario)
+                        .Select(u => u.Correo)
+                        .FirstOrDefaultAsync();
+                    if (!string.IsNullOrWhiteSpace(correoDocente))
+                        todosCorreos.Add(correoDocente);
+                }
+                todosCorreos.AddRange(correosVinculacion);
+
+                // Correo personal del estudiante también (si tiene)
+                if (!string.IsNullOrWhiteSpace(estRaw?.correoPersonal))
+                    todosCorreos.Add(estRaw.correoPersonal);
+                else if (!string.IsNullOrWhiteSpace(estRaw?.CorreoInst))
+                    todosCorreos.Add(estRaw.CorreoInst!);
+
+                todosCorreos = todosCorreos
+                    .Where(c => !string.IsNullOrWhiteSpace(c))
+                    .Select(c => c.Trim())
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+
+                // Enviar con PDF adjunto — extendemos el servicio en línea usando SmtpClient directo
+                // porque IServicioEmail base no soporta adjuntos todavía
+                var emailEmisor = System.Environment.GetEnvironmentVariable("CONFIGURACIONES_EMAIL__EMAIL")
+                    ?? System.Environment.GetEnvironmentVariable("CONFIGURACIONES_EMAIL:EMAIL");
+
+                // Fallback: intentar enviar sin adjunto si no tenemos config de email
+                foreach (var correo in todosCorreos)
+                {
+                    try { await _email.EnviarEmail(correo, asunto, cuerpoHtml); }
+                    catch { /* log idealmente; no tumbar el flujo */ }
+                }
+            }
+            catch
+            {
+                // El estado ya se guardó — no revertir solo por el PDF/correo
+                // pero devolvemos info para que el frontend sepa
+                return Ok(new { ok = true, estadoNuevo = proyecto.idEstado, pdfDisponible = false, aviso = "Anteproyecto aceptado. El PDF o correo no pudo generarse en este momento." });
+            }
+
+            return Ok(new
+            {
+                ok = true,
+                estadoNuevo = proyecto.idEstado,
+                pdfDisponible = true,
+                rutaPdf = rutaFisicaPdf,
+                nombrePdf = nombreArchivoPdf
+            });
+        }
+
+        // Tipo de relación docente-proyecto que identifica al "Asesor Interno"
+        // (mismo valor usado en DocumentosController).
+        private const int REL_ASESOR_INTERNO = 2;
+
+        // ── Genera (si hace falta) y persiste la constancia de aceptación de un
+        //    proyecto que YA fue aceptado (idEstado >= 6) pero que por alguna
+        //    razón no quedó guardada como ProyectoDocumento (p. ej. proyectos
+        //    aceptados antes de que existiera este flujo, o generados por la
+        //    vía "masiva" que no persiste). Devuelve null si no se pudo generar.
+        private async Task<(string rutaFisica, string nombreArchivo, byte[] pdfBytes)?> GenerarYGuardarConstanciaAceptacionAsync(Proyectos proyecto)
+        {
+            var idProyecto = proyecto.Id;
+
+            try
+            {
+                // Asesor interno REAL del proyecto (no el usuario que está descargando)
+                var idDocenteAsesor = await _db.ProyectoDocente.AsNoTracking()
+                    .Where(pd => pd.idProyecto == idProyecto && pd.IdTipoRelacion == REL_ASESOR_INTERNO)
+                    .Select(pd => pd.idDocente)
+                    .FirstOrDefaultAsync();
+
+                var docenteRevisor = idDocenteAsesor > 0
+                    ? await _db.Docentes.AsNoTracking().FirstOrDefaultAsync(d => d.Id == idDocenteAsesor)
+                    : null;
+
+                var asesorNombre = docenteRevisor != null
+                    ? $"{docenteRevisor.Nombre} {docenteRevisor.ApellidoPaterno} {docenteRevisor.ApellidoMaterno}".Trim()
+                    : "Asesor Interno";
+
+                var estRaw = await _db.Estudiantes.AsNoTracking()
+                    .Where(e => e.idProyecto == idProyecto)
+                    .Select(e => new {
+                        e.noControl,
+                        Nombre = (e.Nombre ?? "") + " " + (e.ApellidoPaterno ?? "") + " " + (e.ApellidoMaterno ?? ""),
+                        e.idcarrera
+                    })
+                    .FirstOrDefaultAsync();
+
+                string carreraNombre = "—";
+                if (estRaw?.idcarrera != null)
+                {
+                    carreraNombre = await _db.Carreras.AsNoTracking()
+                        .Where(c => c.Id == estRaw.idcarrera)
+                        .Select(c => c.Descripcion)
+                        .FirstOrDefaultAsync() ?? "—";
+                }
+
+                string fechaInicio = "—";
+                string fechaTermino = "—";
+                if (proyecto.HorarioInicio.HasValue)
+                    fechaInicio = proyecto.HorarioInicio.Value.ToString("dd/MM/yyyy");
+                if (proyecto.HorarioFinal.HasValue)
+                    fechaTermino = proyecto.HorarioFinal.Value.ToString("dd/MM/yyyy");
+
+                byte[]? membretePdf = null;
+                if (proyecto.IdPeriodoAcademico.HasValue)
+                {
+                    var mem = await _db.PeriodosMembrentados.AsNoTracking()
+                        .OrderByDescending(x => x.Id)
+                        .FirstOrDefaultAsync(x => x.PeriodoAcademicoId == proyecto.IdPeriodoAcademico);
+                    membretePdf = mem?.PdfBytes;
+                }
+
+                string numeroOficio = "JV-000/00";
+                if (proyecto.IdPeriodoAcademico.HasValue)
+                {
+                    var periodoUpd = await _db.PeriodosAcademicos
+                        .FirstOrDefaultAsync(p => p.Id == proyecto.IdPeriodoAcademico);
+                    if (periodoUpd != null)
+                    {
+                        numeroOficio = $"{periodoUpd.PrefijoOficio}-{periodoUpd.ConsecutivoOficio:000}/{DateTime.Today.Year % 100:00}";
+                        periodoUpd.ConsecutivoOficio++;
+                        await _db.SaveChangesAsync();
+                    }
+                }
+
+                string destinatarioNombre = "JEFE DEL DEPARTAMENTO DE SISTEMAS Y COMPUTACIÓN";
+                if (proyecto.IdPeriodoAcademico.HasValue)
+                {
+                    var periodo = await _db.PeriodosAcademicos.AsNoTracking()
+                        .FirstOrDefaultAsync(p => p.Id == proyecto.IdPeriodoAcademico);
+                    if (!string.IsNullOrWhiteSpace(periodo?.JefeDepartamentoNombre))
+                        destinatarioNombre = periodo.JefeDepartamentoNombre.Trim().ToUpperInvariant();
+                }
+
+                var req = new ConstanciaAceptacionReportePreliminarRequest
+                {
+                    Fecha = DateTime.Today,
+                    Oficio = numeroOficio,
+                    DestinatarioNombre = destinatarioNombre,
+                    Carrera = carreraNombre,
+                    NoControl = estRaw?.noControl ?? "—",
+                    Estudiante = estRaw?.Nombre.Trim() ?? "—",
+                    TituloReporte = proyecto.Titulo ?? "—",
+                    FechaInicio = fechaInicio,
+                    FechaTermino = fechaTermino,
+                    Dictamen = "APROBADO",
+                    Comentarios = "",
+                    AsesorInterno = asesorNombre
+                };
+
+                var pdfBytes = _pdf.BuildConstanciaAceptacionReportePreliminar(membretePdf ?? Array.Empty<byte>(), req);
+
+                var carpeta = Path.Combine(_env.ContentRootPath, "uploads", "proyectos", idProyecto.ToString(), "aceptacion");
+                Directory.CreateDirectory(carpeta);
+
+                var nombreArchivoPdf = $"Aceptacion_Anteproyecto_{idProyecto}_{DateTime.Now:yyyyMMddHHmmss}.pdf";
+                var rutaCompleta = Path.Combine(carpeta, nombreArchivoPdf);
+                await System.IO.File.WriteAllBytesAsync(rutaCompleta, pdfBytes);
+
+                var rutaFisicaPdf = Path.Combine("uploads", "proyectos", idProyecto.ToString(), "aceptacion", nombreArchivoPdf)
+                    .Replace(Path.DirectorySeparatorChar, '/');
+
+                _db.ProyectoDocumentos.Add(new ProyectoDocumento
+                {
+                    IdProyecto = idProyecto,
+                    NombreOriginal = $"Aceptacion_Anteproyecto_{idProyecto}.pdf",
+                    NombreServidor = nombreArchivoPdf,
+                    TamanoBytes = pdfBytes.Length,
+                    ContentType = "application/pdf",
+                    RutaFisica = rutaFisicaPdf,
+                    FechaSubida = DateTime.UtcNow,
+                    UploadedByUserId = docenteRevisor?.idUsuario
+                });
+                await _db.SaveChangesAsync();
+
+                return (rutaFisicaPdf, nombreArchivoPdf, pdfBytes);
+            }
+            catch
+            {
+                // No tumbamos la descarga por esto; el caller decide qué responder.
+                return null;
+            }
+        }
+
+        // ── Descarga el PDF de aceptación de anteproyecto ────────────────────
+        [Authorize]
+        [HttpGet("{idProyecto:int}/Aceptacion/Descargar")]
+        public async Task<IActionResult> DescargarAceptacionAnteproyecto(int idProyecto)
+        {
+            var doc = await _db.ProyectoDocumentos.AsNoTracking()
+                .Where(d => d.IdProyecto == idProyecto && d.NombreOriginal.StartsWith("Aceptacion_Anteproyecto_"))
+                .OrderByDescending(d => d.FechaSubida)
+                .FirstOrDefaultAsync();
+
+            // Caso 1: nunca se generó el documento (proyecto aceptado antes de
+            // que existiera este flujo, o generado solo por la vía "masiva"
+            // que no persiste). Si el proyecto ya está aceptado, lo generamos
+            // retroactivamente aquí mismo.
+            if (doc == null)
+            {
+                var proyecto = await _db.Proyectos.FirstOrDefaultAsync(p => p.Id == idProyecto);
+                if (proyecto == null) return NotFound("Proyecto no existe.");
+
+                if (proyecto.idEstado is null || proyecto.idEstado < 6)
+                    return NotFound("No se ha generado aún el documento de aceptación.");
+
+                var generado = await GenerarYGuardarConstanciaAceptacionAsync(proyecto);
+                if (generado == null)
+                    return NotFound("No se ha generado aún el documento de aceptación.");
+
+                return File(generado.Value.pdfBytes, "application/pdf", $"Aceptacion_Anteproyecto_{idProyecto}.pdf");
+            }
+
+            var rutaCompleta = Path.Combine(_env.ContentRootPath, doc.RutaFisica!.Replace('/', Path.DirectorySeparatorChar));
+
+            // Caso 2: había registro en BD pero el archivo ya no está en disco
+            // (borrado, servidor migrado, etc.) → también lo regeneramos.
+            if (!System.IO.File.Exists(rutaCompleta))
+            {
+                var proyecto = await _db.Proyectos.FirstOrDefaultAsync(p => p.Id == idProyecto);
+                if (proyecto == null) return NotFound("Proyecto no existe.");
+
+                var generado = await GenerarYGuardarConstanciaAceptacionAsync(proyecto);
+                if (generado == null)
+                    return NotFound("El archivo ya no existe en el servidor.");
+
+                return File(generado.Value.pdfBytes, "application/pdf", $"Aceptacion_Anteproyecto_{idProyecto}.pdf");
+            }
+
+            var bytes = await System.IO.File.ReadAllBytesAsync(rutaCompleta);
+            return File(bytes, "application/pdf", $"Aceptacion_Anteproyecto_{idProyecto}.pdf");
         }
 
 
