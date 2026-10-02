@@ -1098,7 +1098,7 @@ namespace WebApiVinculacionProyectosV2.Migrations
             migrationBuilder.InsertData(
                 table: "Usuarios",
                 columns: new[] { "Id", "Activo", "ApellidoMaterno", "ApellidoPaterno", "Correo", "Nombre", "PasswordHash" },
-                values: new object[] { 1, true, "SISTEMAS", "VINCUACION", "jefatura.sistemas@itoaxaca.edu.mx", "JEFATURA DE"", "8D969EEF6ECAD3C29A3A629280E686CF0C3F5D5A86AFF3CA12020C923ADC6C92" });
+                values: new object[] { 1, true, "SISTEMAS", "VINCUACION", "jefatura.sistemas@itoaxaca.edu.mx", "JEFATURA DE", "8D969EEF6ECAD3C29A3A629280E686CF0C3F5D5A86AFF3CA12020C923ADC6C92" });
 
             migrationBuilder.InsertData(
                 table: "RolPermiso",
