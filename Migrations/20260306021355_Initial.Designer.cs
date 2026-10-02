@@ -2165,10 +2165,10 @@ namespace WebApiVinculacionProyectosV2.Migrations
                         {
                             Id = 1,
                             Activo = true,
-                            ApellidoMaterno = "JEFATURA",
-                            ApellidoPaterno = "VINCULACION",
+                            ApellidoMaterno = "VINCULACION",
+                            ApellidoPaterno = "SISTEMAS",
                             Correo = "jefatura.sistemas@itoaxaca.edu.mx",
-                            Nombre = "SISTEMAS",
+                            Nombre = "JEFATURA DE",
                             PasswordHash = "8D969EEF6ECAD3C29A3A629280E686CF0C3F5D5A86AFF3CA12020C923ADC6C92"
                         });
                 });
