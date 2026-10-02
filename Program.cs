@@ -87,11 +87,25 @@ builder.Services.AddAuthentication(config =>
 });
 
 // CORS (tu front)
-builder.Services.AddCors(options =>
+/*builder.Services.AddCors(options =>
 {
     options.AddPolicy("CorsPolicy", policy =>
     {
         policy.WithOrigins("http://localhost:4200")
+              .AllowAnyHeader()
+              .AllowAnyMethod()
+              .AllowCredentials()
+              .WithExposedHeaders("Content-Disposition"); // permite leer el nombre del PDF en Angular
+    });
+});
+*/// CORS (tu front)
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy("CorsPolicy", policy =>
+    {
+        policy.SetIsOriginAllowed(origin =>
+                origin == "http://localhost:4200" ||
+                origin.EndsWith(".devtunnels.ms", StringComparison.OrdinalIgnoreCase))
               .AllowAnyHeader()
               .AllowAnyMethod()
               .AllowCredentials()
@@ -236,7 +250,7 @@ if (app.Environment.IsDevelopment())
     app.Use((ctx, next) =>
     {
         ctx.Response.Headers["Content-Security-Policy"] =
-            "connect-src 'self' http://localhost:* ws://localhost:* http://127.0.0.1:* ws://127.0.0.1:*";
+            "connect-src 'self' http://localhost:* ws://localhost:* http://127.0.0.1:* ws://127.0.0.1:* https://*.devtunnels.ms wss://*.devtunnels.ms";
         return next();
     });
 }

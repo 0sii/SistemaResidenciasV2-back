@@ -1,4 +1,3 @@
-C:\Users\osihe\Documentos\WebApiVinculacionProyectosV2-master\WebApiVinculacionProyectosV2-master\webApiVinculacionProyectosV2\bin\Debug\net8.0\appsettings.Development.json
 C:\Users\osihe\Documentos\WebApiVinculacionProyectosV2-master\WebApiVinculacionProyectosV2-master\webApiVinculacionProyectosV2\bin\Debug\net8.0\appsettings.json
 C:\Users\osihe\Documentos\WebApiVinculacionProyectosV2-master\WebApiVinculacionProyectosV2-master\webApiVinculacionProyectosV2\bin\Debug\net8.0\Fonts\NotoSans-Bold.ttf
 C:\Users\osihe\Documentos\WebApiVinculacionProyectosV2-master\WebApiVinculacionProyectosV2-master\webApiVinculacionProyectosV2\bin\Debug\net8.0\Fonts\NotoSans-Regular.ttf
