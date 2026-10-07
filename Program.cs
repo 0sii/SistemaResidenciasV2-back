@@ -105,6 +105,7 @@ builder.Services.AddCors(options =>
     {
         policy.SetIsOriginAllowed(origin =>
                 origin == "http://localhost:4200" ||
+                origin == "https://vinculacion.hhdigitalservices.com.mx" ||
                 origin.EndsWith(".devtunnels.ms", StringComparison.OrdinalIgnoreCase))
               .AllowAnyHeader()
               .AllowAnyMethod()
