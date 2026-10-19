@@ -44,6 +44,49 @@ namespace WebApiVinculacionProyectosV2.Controllers
         [HttpGet]
         public async Task<IActionResult> GetAll()
         {
+            // Regulariza usuarios que tienen el rol "Docente" pero aún no tienen registro
+            // en Docentes (p. ej. dados de alta desde el módulo de Usuarios).
+            try
+            {
+                var roles = await _db.Rol.AsNoTracking()
+                    .Select(r => new { r.Id, r.Descripcion })
+                    .ToListAsync();
+                var idsRolDocente = roles
+                    .Where(r => (r.Descripcion ?? "").Trim().ToLower() == "docente")
+                    .Select(r => r.Id)
+                    .ToList();
+
+                if (idsRolDocente.Count > 0)
+                {
+                    var faltantes = await (
+                        from ur in _db.UsuarioRol.AsNoTracking()
+                        join u in _db.Usuarios.AsNoTracking() on ur.IdUsuario equals u.Id
+                        where idsRolDocente.Contains(ur.IdRol)
+                              && !_db.Docentes.Any(d => d.idUsuario == u.Id)
+                        select new { u.Id, u.Nombre, u.ApellidoPaterno, u.ApellidoMaterno }
+                    ).Distinct().ToListAsync();
+
+                    if (faltantes.Count > 0)
+                    {
+                        foreach (var f in faltantes)
+                        {
+                            _db.Docentes.Add(new Docentes
+                            {
+                                idUsuario = f.Id,
+                                Nombre = f.Nombre ?? "",
+                                ApellidoPaterno = f.ApellidoPaterno ?? "",
+                                ApellidoMaterno = f.ApellidoMaterno ?? ""
+                            });
+                        }
+                        await _db.SaveChangesAsync();
+                    }
+                }
+            }
+            catch
+            {
+                // No impedir que el listado cargue si la regularización falla.
+            }
+
             var data = await (
                 from d in _db.Docentes.AsNoTracking()
                 join u in _db.Usuarios.AsNoTracking() on d.idUsuario equals u.Id

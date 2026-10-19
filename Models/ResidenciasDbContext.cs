@@ -45,6 +45,7 @@ namespace WebApiVinculacionProyectosV2.Models
         public virtual DbSet<EstadoEntregable> EstadoEntregables { get; set; } = null!;
         public DbSet<PeriodoMembrentado> PeriodosMembrentados { get; set; } = null!;
         public DbSet<ProyectoDocumento> ProyectoDocumentos { get; set; } = null!;
+        public DbSet<OficioEmitido> OficiosEmitidos { get; set; } = null!;
 
         protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
         {
@@ -85,6 +86,7 @@ namespace WebApiVinculacionProyectosV2.Models
             ConfigureTipoRelacionDocenteProyecto(modelBuilder);
             ConfigureInvitacionProyecto(modelBuilder);
             ConfigureEstadoEntregable(modelBuilder);
+            ConfigureOficioEmitido(modelBuilder);
 
 
 
@@ -495,6 +497,10 @@ namespace WebApiVinculacionProyectosV2.Models
 
                 entity.Property(p => p.PropuestaAlumno)
                       .HasDefaultValue(false);
+
+                entity.Property(p => p.FechaAceptacionAnteproyecto)
+                      .HasColumnType("datetime(6)")
+                      .IsRequired(false);
 
                 // ✅ NUEVO: FK a Estudiantes (líder)
                 entity.HasOne<Estudiantes>()
@@ -914,6 +920,30 @@ namespace WebApiVinculacionProyectosV2.Models
                     new TipoRelacionDocenteProyecto { Id = 2, Clave = "ASESOR_INTERNO", Descripcion = "Asesor interno", Activo = true },
                     new TipoRelacionDocenteProyecto { Id = 3, Clave = "REVISOR_RESIDENCIA", Descripcion = "Revisor de residencia", Activo = true }
                 );
+            });
+        }
+
+        private static void ConfigureOficioEmitido(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<OficioEmitido>(entity =>
+            {
+                entity.ToTable("oficiosemitidos");
+                entity.HasKey(o => o.Id);
+
+                entity.Property(o => o.TipoClave).HasMaxLength(40).IsRequired();
+                entity.Property(o => o.NumeroOficio).HasMaxLength(30).IsRequired();
+                entity.Property(o => o.FechaEmision).HasColumnType("date");
+
+                // Un solo oficio por periodo + rol + docente + proyecto + estudiante (0 = no aplica).
+                entity.HasIndex(o => new { o.IdPeriodoAcademico, o.TipoClave, o.IdDocente, o.IdProyecto, o.IdEstudiante })
+                      .IsUnique()
+                      .HasDatabaseName("UX_OficiosEmitidos_Llave");
+
+                // Un número de oficio no puede repetirse dentro del mismo periodo
+                // (también protege contra dos peticiones simultáneas que tomen el mismo consecutivo).
+                entity.HasIndex(o => new { o.IdPeriodoAcademico, o.NumeroOficio })
+                      .IsUnique()
+                      .HasDatabaseName("UX_OficiosEmitidos_Numero");
             });
         }
 

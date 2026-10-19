@@ -909,6 +909,55 @@ namespace WebApiVinculacionProyectosV2.Migrations
                         });
                 });
 
+            modelBuilder.Entity("WebApiVinculacionProyectosV2.Models.OficioEmitido", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    MySqlPropertyBuilderExtensions.UseMySqlIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<DateTime>("CreadoEn")
+                        .HasColumnType("datetime(6)");
+
+                    b.Property<DateTime>("FechaEmision")
+                        .HasColumnType("date");
+
+                    b.Property<int>("IdDocente")
+                        .HasColumnType("int");
+
+                    b.Property<int>("IdEstudiante")
+                        .HasColumnType("int");
+
+                    b.Property<int>("IdPeriodoAcademico")
+                        .HasColumnType("int");
+
+                    b.Property<int>("IdProyecto")
+                        .HasColumnType("int");
+
+                    b.Property<string>("NumeroOficio")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("varchar(30)");
+
+                    b.Property<string>("TipoClave")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("varchar(40)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("IdPeriodoAcademico", "NumeroOficio")
+                        .IsUnique()
+                        .HasDatabaseName("UX_OficiosEmitidos_Numero");
+
+                    b.HasIndex("IdPeriodoAcademico", "TipoClave", "IdDocente", "IdProyecto", "IdEstudiante")
+                        .IsUnique()
+                        .HasDatabaseName("UX_OficiosEmitidos_Llave");
+
+                    b.ToTable("oficiosemitidos", (string)null);
+                });
+
             modelBuilder.Entity("WebApiVinculacionProyectosV2.Models.PeriodoAcademico", b =>
                 {
                     b.Property<int>("Id")
@@ -1258,6 +1307,9 @@ namespace WebApiVinculacionProyectosV2.Migrations
                     b.Property<string>("Descripcion")
                         .HasColumnType("longtext");
 
+                    b.Property<DateTime?>("FechaAceptacionAnteproyecto")
+                        .HasColumnType("datetime(6)");
+
                     b.Property<DateTime>("FechaRegistro")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("datetime(6)")
@@ -1282,6 +1334,9 @@ namespace WebApiVinculacionProyectosV2.Migrations
                         .HasColumnType("int");
 
                     b.Property<string>("Objetivo")
+                        .HasColumnType("longtext");
+
+                    b.Property<string>("OficioRevisorReportePreliminar")
                         .HasColumnType("longtext");
 
                     b.Property<bool>("PropuestaAlumno")

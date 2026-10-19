@@ -1,8 +1,8 @@
 {
   "version": 2,
-  "dgSpecHash": "m7F90udZWRk=",
+  "dgSpecHash": "5j7tmIrleXw=",
   "success": true,
-  "projectFilePath": "C:\\Users\\osihe\\Documentos\\WebApiVinculacionProyectosV2-master\\WebApiVinculacionProyectosV2-master\\webApiVinculacionProyectosV2\\WebApiVinculacionProyectosV2.csproj",
+  "projectFilePath": "C:\\Users\\osihe\\Documentos\\WebApiVinculacionProyectosV2\\WebApiVinculacionProyectosV2.csproj",
   "expectedPackageFiles": [
     "C:\\Users\\osihe\\.nuget\\packages\\bcrypt.net-next\\4.0.3\\bcrypt.net-next.4.0.3.nupkg.sha512",
     "C:\\Users\\osihe\\.nuget\\packages\\bouncycastle.cryptography\\2.6.2\\bouncycastle.cryptography.2.6.2.nupkg.sha512",

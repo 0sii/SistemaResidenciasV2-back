@@ -354,9 +354,43 @@ namespace WebApiVinculacionProyectosV2.Controllers
             if (dbUser is null)
                 return NotFound(new { message = "Usuario no encontrado" });
 
-            _db.Usuarios.Remove(dbUser);
-            await _db.SaveChangesAsync();
-            return NoContent();
+            // Docentes.idUsuario y Estudiantes.idUsuario son FK con Restrict, así que antes de
+            // borrar el usuario hay que quitar su perfil. Se bloquea si tiene información
+            // ligada, para no perder asignaciones/proyectos (ProyectoDocente se borra en cascada).
+            using var tx = await _db.Database.BeginTransactionAsync();
+            try
+            {
+                var docente = await _db.Docentes.FirstOrDefaultAsync(d => d.idUsuario == id);
+                if (docente != null)
+                {
+                    var tieneAsignaciones = await _db.ProyectoDocente.AnyAsync(pd => pd.idDocente == docente.Id);
+                    if (tieneAsignaciones)
+                        return Conflict(new { message = "No se puede eliminar: el docente tiene proyectos asignados. Desactiva al usuario en su lugar." });
+
+                    _db.Docentes.Remove(docente);
+                }
+
+                var estudiante = await _db.Estudiantes.FirstOrDefaultAsync(e => e.idUsuario == id);
+                if (estudiante != null)
+                {
+                    if (estudiante.idProyecto != null)
+                        return Conflict(new { message = "No se puede eliminar: el estudiante está ligado a un proyecto. Desactiva al usuario en su lugar." });
+
+                    _db.Estudiantes.Remove(estudiante);
+                }
+
+                _db.UsuarioRol.RemoveRange(await _db.UsuarioRol.Where(ur => ur.IdUsuario == id).ToListAsync());
+                _db.Usuarios.Remove(dbUser);
+
+                await _db.SaveChangesAsync();
+                await tx.CommitAsync();
+                return NoContent();
+            }
+            catch (DbUpdateException)
+            {
+                // Quedó información relacionada (entregables, documentos, etc.): se revierte todo.
+                return Conflict(new { message = "No se puede eliminar: el usuario tiene información relacionada en el sistema. Desactívalo en su lugar." });
+            }
         }
 
         // =====================================================================
@@ -375,6 +409,9 @@ namespace WebApiVinculacionProyectosV2.Controllers
             public int[] RolesIds { get; set; } = Array.Empty<int>();
             public string? NoControl { get; set; } // solo si se asigna Estudiante y no existe registro
         }
+
+        private static readonly System.Text.RegularExpressions.Regex SoloLetrasRegex =
+            new(@"^[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]+( [A-Za-zÁÉÍÓÚÜÑáéíóúüñ]+)*$");
 
         private static bool IsValidNoControl(string v)
         {
@@ -414,66 +451,111 @@ namespace WebApiVinculacionProyectosV2.Controllers
             if (esEstudiante && rolesIds.Length > 1)
                 return BadRequest(new { message = "Un Estudiante solo puede tener el rol Estudiante." });
 
-            // === Actualizar UsuarioRol como ya lo hacías ===
-            var actuales = await _db.UsuarioRol
-                .Where(ur => ur.IdUsuario == idUsuario)
-                .ToListAsync();
-
-            _db.UsuarioRol.RemoveRange(actuales);
-
-            foreach (var idRol in rolesIds)
-            {
-                _db.UsuarioRol.Add(new UsuarioRol
-                {
-                    IdUsuario = idUsuario,
-                    IdRol = idRol
-                });
-            }
-
-            await _db.SaveChangesAsync();
-
-            // === Crear/recuperar registro asociado SIN borrarlo jamás ===
-
-            // Si es Estudiante: si ya existe registro -> no pedir noControl
+            // Misma regex que los CHECK de la tabla Estudiantes (CK_Estudiantes_*SoloLetras)
             if (esEstudiante)
             {
-                var existeEst = await _db.Estudiantes.AnyAsync(e => e.idUsuario == idUsuario);
-
-                if (!existeEst)
+                var yaEsEstudiante = await _db.Estudiantes.AnyAsync(e => e.idUsuario == idUsuario);
+                if (!yaEsEstudiante)
                 {
-                    var nc = (dto?.NoControl ?? "").Trim().ToUpperInvariant();
-
-                    if (string.IsNullOrWhiteSpace(nc))
-                        return BadRequest(new { field = "noControl", message = "No. de control es obligatorio para rol Estudiante." });
-
-                    if (!IsValidNoControl(nc))
-                        return BadRequest(new { field = "noControl", message = "Formato inválido. Debe ser 8 números o 1 letra + 8 números." });
-
-                    var ncRepetido = await _db.Estudiantes.AnyAsync(e => e.noControl == nc);
-                    if (ncRepetido)
-                        return Conflict(new { field = "noControl", message = "El No. de control ya está registrado." });
-
-                    // Crear Estudiante “mínimo viable”
-                    _db.Estudiantes.Add(new Estudiantes
+                    if (!SoloLetrasRegex.IsMatch(usuario.Nombre ?? "") ||
+                        !SoloLetrasRegex.IsMatch(usuario.ApellidoPaterno ?? "") ||
+                        !SoloLetrasRegex.IsMatch(usuario.ApellidoMaterno ?? ""))
                     {
-                        idUsuario = idUsuario,
-                        Nombre = usuario.Nombre ?? "",
-                        ApellidoPaterno = usuario.ApellidoPaterno ?? "",
-                        ApellidoMaterno = usuario.ApellidoMaterno ?? "",
-                        noControl = nc,
-                        cp = "00000" // para que no truene si tu tabla lo requiere; luego lo editas en módulo de estudiantes
-                    });
-
-                    await _db.SaveChangesAsync();
+                        return BadRequest(new
+                        {
+                            message = "Para asignar el rol Estudiante, el nombre y ambos apellidos deben contener solo letras " +
+                                      "(sin números ni signos) y el apellido materno no puede estar vacío."
+                        });
+                    }
                 }
             }
 
-            // Si es Docente: el registro en la tabla Docentes lo crea DocentesController.Create
-            // con los datos completos del formulario. Aquí solo gestionamos el rol.
-            // (No auto-crear un registro vacío para evitar duplicados)
+            // Todo en una transacción: si falla la creación del Estudiante/Docente,
+            // NO queda el rol guardado a medias.
+            await using var tx = await _db.Database.BeginTransactionAsync();
+            try
+            {
+                var actuales = await _db.UsuarioRol
+                    .Where(ur => ur.IdUsuario == idUsuario)
+                    .ToListAsync();
 
-            return NoContent();
+                _db.UsuarioRol.RemoveRange(actuales);
+
+                foreach (var idRol in rolesIds)
+                {
+                    _db.UsuarioRol.Add(new UsuarioRol
+                    {
+                        IdUsuario = idUsuario,
+                        IdRol = idRol
+                    });
+                }
+
+                await _db.SaveChangesAsync();
+
+                // Si es Estudiante: crear registro si no existe (nunca se borra)
+                if (esEstudiante)
+                {
+                    var existeEst = await _db.Estudiantes.AnyAsync(e => e.idUsuario == idUsuario);
+
+                    if (!existeEst)
+                    {
+                        var nc = (dto?.NoControl ?? "").Trim().ToUpperInvariant();
+
+                        if (string.IsNullOrWhiteSpace(nc))
+                            return BadRequest(new { field = "noControl", message = "No. de control es obligatorio para rol Estudiante." });
+
+                        if (!IsValidNoControl(nc))
+                            return BadRequest(new { field = "noControl", message = "Formato inválido. Debe ser 8 números o 1 letra + 8 números." });
+
+                        var ncRepetido = await _db.Estudiantes.AnyAsync(e => e.noControl == nc);
+                        if (ncRepetido)
+                            return Conflict(new { field = "noControl", message = "El No. de control ya está registrado." });
+
+                        _db.Estudiantes.Add(new Estudiantes
+                        {
+                            idUsuario = idUsuario,
+                            Nombre = usuario.Nombre!,
+                            ApellidoPaterno = usuario.ApellidoPaterno!,
+                            ApellidoMaterno = usuario.ApellidoMaterno!,
+                            noControl = nc,
+                            cp = "00000" // se completa luego en el módulo de estudiantes
+                        });
+
+                        await _db.SaveChangesAsync();
+                    }
+                }
+
+                // Si es Docente: registro mínimo para que aparezca en el módulo de Docentes
+                if (esDocente)
+                {
+                    var existeDoc = await _db.Docentes.AnyAsync(d => d.idUsuario == idUsuario);
+                    if (!existeDoc)
+                    {
+                        _db.Docentes.Add(new Docentes
+                        {
+                            idUsuario = idUsuario,
+                            Nombre = usuario.Nombre ?? "",
+                            ApellidoPaterno = usuario.ApellidoPaterno ?? "",
+                            ApellidoMaterno = usuario.ApellidoMaterno ?? ""
+                        });
+                        await _db.SaveChangesAsync();
+                    }
+                }
+
+                await tx.CommitAsync();
+                return NoContent();
+            }
+            catch (DbUpdateException ex)
+            {
+                // Al salir sin CommitAsync se hace rollback automático
+                return StatusCode(500, new
+                {
+                    message = "No se pudieron guardar los roles del usuario.",
+                    error = ex.InnerException?.Message ?? ex.Message
+                });
+            }
         }
+
         // ==========================
         // Helper: noControl temporal único
         // ==========================

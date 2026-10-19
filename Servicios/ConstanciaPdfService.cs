@@ -136,13 +136,20 @@ public sealed class OficioAsignacionRevisorReportePreliminarRequest
     public string FirmaCargoLinea1 { get; set; } = "SUBDIRECTORA ACADÉMICA";
 }
 
+public sealed class AceptacionEstudianteItem
+{
+    public string NoControl { get; set; } = "";
+    public string Nombre { get; set; } = "";
+}
+
 public sealed class ConstanciaAceptacionReportePreliminarRequest
 {
     public string Ciudad { get; set; } = "Oaxaca de Juárez, Oaxaca";
     public DateTime Fecha { get; set; } = DateTime.Today;
 
-    // En el formato original suele quedarse como XXX
-    public string Oficio { get; set; } = "ITO/XXX/2026";
+    // Nº del oficio de "Asignación de revisor de reporte preliminar" al que responde esta aceptación.
+    // Si viene vacío se imprime una línea en blanco para llenarlo a mano.
+    public string Oficio { get; set; } = "";
 
     // Nombre en la línea "C. ____"
     public string DestinatarioNombre { get; set; } = "IDAR";
@@ -155,8 +162,14 @@ public sealed class ConstanciaAceptacionReportePreliminarRequest
     public string Carrera { get; set; } = "";
     public int? CarreraId { get; set; } = null;
 
+    // Un solo estudiante (compatibilidad con los flujos masivos)…
     public string NoControl { get; set; } = "";
     public string Estudiante { get; set; } = "";
+
+    // …o todos los integrantes del proyecto (una fila por integrante). Si viene con elementos,
+    // tiene prioridad sobre NoControl/Estudiante.
+    public List<AceptacionEstudianteItem> Estudiantes { get; set; } = new();
+
     public string TituloReporte { get; set; } = "";
 
     // dd/MM/yyyy (si llegan vacías, se imprime "—")
@@ -476,11 +489,9 @@ public sealed class ConstanciaAceptacionReportePreliminarRequest
             var esMx = CultureInfo.GetCultureInfo("es-MX");
 
             string carrera = ResolveCarreraNombre();
-            string jefeNombre = string.IsNullOrWhiteSpace(req.DestinatarioNombre)
-                ? "NOMBRE DEL JEFE(A)"
-                : req.DestinatarioNombre.Trim();
-
-            string jefeCargoFijo = "JEFE DEL DEPARTAMENTO DE SISTEMAS Y COMPUTACIÓN";
+            // Formato real: "C. Idarh Claudio Matadamas Ortiz" / "Jefe (a) del Departamento de Sistemas y Computación"
+            string jefeNombre = FormatearDestinatarioJefe(req.DestinatarioNombre, esMx);
+            string jefeCargoFijo = "Jefe (a) del Departamento de Sistemas y Computación";
 
             float left = 72f;
             float right = rect.GetWidth() - 72f;
@@ -489,8 +500,8 @@ public sealed class ConstanciaAceptacionReportePreliminarRequest
             // =========================
             // Encabezado derecho
             // =========================
-            string fechaSolo = req.Fecha.ToString("dd'/'MMMM'/'yyyy", esMx).ToLower(esMx);
-            string ciudadPrefix = $"{req.Ciudad}, ";
+            string fechaSolo = req.Fecha.ToString("dd 'de' MMMM 'de' yyyy", esMx);
+            string ciudadPrefix = "Oaxaca de Juárez, Oax. a ";
 
             float fechaY = 140f;
             float asuntoY = 154f;
@@ -504,9 +515,9 @@ public sealed class ConstanciaAceptacionReportePreliminarRequest
 
             DrawMixedRight(
                 "ASUNTO:",
-                font,
+                fontBold,
                 9.6f,
-                "Aceptación del Reporte Preliminar Residencia Profesional",
+                "Aceptación del Reporte Preliminar Residencia Profesional.",
                 fontBold,
                 9.8f,
                 right,
@@ -523,16 +534,23 @@ public sealed class ConstanciaAceptacionReportePreliminarRequest
 
             DrawText(jefeNombre, left, destY, fontBold, 9.9f);
             DrawText(jefeCargoFijo, left, cargoY, fontBold, 9.7f);
-            DrawText("P R E S E N T E.", left, presenteY, fontBold, 9.7f);
+            DrawText("P R E S E N T E", left, presenteY, fontBold, 9.7f);
 
             // =========================
             // Párrafo principal
             // =========================
-            string oficio = string.IsNullOrWhiteSpace(req.Oficio) ? "ITO/XXX/2026" : req.Oficio.Trim();
+            string oficio = string.IsNullOrWhiteSpace(req.Oficio) ? "______________" : req.Oficio.Trim();
 
-            string parrafo =
-                $"En respuesta al oficio {oficio}, informo a usted que el Reporte Preliminar de Residencias Profesionales " +
-                $"del estudiante de la carrera de {carrera},";
+            var integrantes = (req.Estudiantes != null && req.Estudiantes.Count > 0)
+                ? req.Estudiantes
+                : new List<AceptacionEstudianteItem> { new() { NoControl = req.NoControl, Nombre = req.Estudiante } };
+            bool variosIntegrantes = integrantes.Count > 1;
+
+            string parrafo = variosIntegrantes
+                ? $"En respuesta al oficio {oficio}, me permito presentar el Reporte Preliminar de Residencias Profesionales " +
+                  $"de los estudiantes de la carrera de {carrera} que a continuación se detallan:"
+                : $"En respuesta al oficio {oficio}, me permito presentar el Reporte Preliminar de Residencias Profesionales " +
+                  $"del estudiante de la carrera de {carrera} que a continuación se detalla:";
 
             float parrafoX = 70f;
             float parrafoTopBaseline = 286f;
@@ -541,16 +559,17 @@ public sealed class ConstanciaAceptacionReportePreliminarRequest
             float leading = 11.4f;
 
             var parrafoLines = WrapLines(parrafo, font, parrafoSize, parrafoWidth);
-            if (parrafoLines.Count > 2)
+            if (parrafoLines.Count > 3)
             {
-                string second = parrafoLines[1];
-                for (int i = 2; i < parrafoLines.Count; i++)
-                    second += " " + parrafoLines[i];
+                string third = parrafoLines[2];
+                for (int i = 3; i < parrafoLines.Count; i++)
+                    third += " " + parrafoLines[i];
 
                 parrafoLines = new List<string>
         {
             parrafoLines[0],
-            TruncateWithEllipsis(second, font, parrafoSize, parrafoWidth)
+            parrafoLines[1],
+            TruncateWithEllipsis(third, font, parrafoSize, parrafoWidth)
         };
             }
 
@@ -566,9 +585,9 @@ public sealed class ConstanciaAceptacionReportePreliminarRequest
 
             // Más ancho para título y un poco más para estudiante
             float w1 = 58f;   // No. Control
-            float w2 = 112f;  // Estudiante
-            float w3 = 205f;  // Título
-            float w4 = 58f;   // Fecha inicio
+            float w2 = 120f;  // Nombre del estudiante
+            float w3 = 190f;  // Título
+            float w4 = 66f;   // Fecha inicio
             float w5 = tableWidth - (w1 + w2 + w3 + w4); // Fecha término
 
             (float x0, float x1) c1 = (tableLeft, tableLeft + w1);
@@ -577,14 +596,15 @@ public sealed class ConstanciaAceptacionReportePreliminarRequest
             (float x0, float x1) c4 = (c3.x1, c3.x1 + w4);
             (float x0, float x1) c5 = (c4.x1, tableRight);
 
-            float tableTop = 308f;
-            float headerH = 22f;
+            float tableTop = 324f;   // el párrafo ahora ocupa 3 líneas
+            float headerH = 26f;
             float pad = 4f;
 
             float rowSize = 9.0f;
             float rowLeading = rowSize + 1.2f;
 
             float rowH = 24f;
+            var subHeights = new List<float>();
             float afterTableY = 0f;
             float aprobadoY = 0f;
             float boxYTop = 0f;
@@ -632,10 +652,14 @@ public sealed class ConstanciaAceptacionReportePreliminarRequest
             {
                 rowLeading = rowSize + 1.2f;
 
+                // Alto de cada integrante (no. de control + nombre); título y fechas ocupan todo el bloque.
+                subHeights = integrantes.Select(it => Math.Max(24f, Math.Max(
+                    MeasureWrappedCellHeight(it.NoControl, font, rowSize, c1.x1 - c1.x0, pad, rowLeading),
+                    MeasureWrappedCellHeight(it.Nombre, font, rowSize, c2.x1 - c2.x0, pad, rowLeading)))).ToList();
+
                 float neededRowH = new[]
                 {
-            MeasureWrappedCellHeight(req.NoControl, font, rowSize, c1.x1 - c1.x0, pad, rowLeading),
-            MeasureWrappedCellHeight(req.Estudiante, font, rowSize, c2.x1 - c2.x0, pad, rowLeading),
+            subHeights.Sum(),
             MeasureWrappedCellHeight(req.TituloReporte, font, rowSize, c3.x1 - c3.x0, pad, rowLeading),
             MeasureWrappedCellHeight(SafeDate(req.FechaInicio), font, rowSize, c4.x1 - c4.x0, pad, rowLeading),
             MeasureWrappedCellHeight(SafeDate(req.FechaTermino), font, rowSize, c5.x1 - c5.x0, pad, rowLeading)
@@ -684,20 +708,41 @@ public sealed class ConstanciaAceptacionReportePreliminarRequest
                 DrawText(text, x, yFromTopBaseline, f, size);
             }
 
-            float headerBase = tableTop + 15f;
-            float headerSize = 8.8f;
+            // Encabezados en negritas, centrados y con salto de línea dentro de la columna
+            void DrawHeaderCell(string text, (float x0, float x1) col, float hSize)
+            {
+                var hl = WrapLines(text, fontBold, hSize, (col.x1 - col.x0) - 6f);
+                float lh = hSize + 1.4f;
+                float first = tableTop + (headerH - (hl.Count * lh)) / 2f + hSize;
+                for (int i = 0; i < hl.Count; i++)
+                    DrawCentered(hl[i], col, first + (i * lh), fontBold, hSize);
+            }
 
-            DrawCentered("No. Control", c1, headerBase, font, headerSize);
-            DrawCentered("Estudiante", c2, headerBase, font, headerSize);
-            DrawCentered("Título del Reporte Preliminar", c3, headerBase, font, headerSize);
-            DrawCentered("Fecha de inicio", c4, headerBase, font, 8.2f);
-            DrawCentered("Fecha de termino", c5, headerBase, font, 8.2f);
+            DrawHeaderCell("No. Control", c1, 8.4f);
+            DrawHeaderCell("Nombre del Estudiante", c2, 8.4f);
+            DrawHeaderCell("Título del Reporte Preliminar", c3, 8.4f);
+            DrawHeaderCell("Fecha de inicio", c4, 8.4f);
+            DrawHeaderCell("Fecha de termino", c5, 8.4f);
 
             float dataTop = tableTop + headerH;
             float rowBase = dataTop + 4f + rowSize;
 
-            FillCellSingleNoEllipsis(c1, req.NoControl, rowBase, font, rowSize);
-            FillCellWrappedDynamic(c2, req.Estudiante, dataTop, rowH, rowSize, pad, rowLeading);
+            // Un renglón por integrante (c1 y c2). El último absorbe el espacio sobrante.
+            float subTop = dataTop;
+            float usado = subHeights.Sum();
+            for (int i = 0; i < integrantes.Count; i++)
+            {
+                float altoFila = subHeights[i];
+                if (i == integrantes.Count - 1 && rowH > usado) altoFila += rowH - usado;
+
+                if (i > 0) DrawLine(c1.x0, subTop, c2.x1, subTop, 1f);
+
+                FillCellSingleNoEllipsis(c1, integrantes[i].NoControl, subTop + 4f + rowSize, font, rowSize);
+                FillCellWrappedDynamic(c2, integrantes[i].Nombre, subTop, altoFila, rowSize, pad, rowLeading);
+
+                subTop += altoFila;
+            }
+
             FillCellWrappedDynamic(c3, req.TituloReporte, dataTop, rowH, rowSize, pad, rowLeading);
             FillCellSingleNoEllipsis(c4, SafeDate(req.FechaInicio), rowBase, font, rowSize);
             FillCellSingleNoEllipsis(c5, SafeDate(req.FechaTermino), rowBase, font, rowSize);
@@ -712,18 +757,12 @@ public sealed class ConstanciaAceptacionReportePreliminarRequest
             float boxSize = 18f;
             DrawRect(boxX, boxYTop, boxSize, boxSize, 1f);
 
-            bool aprobado = string.Equals(req.Dictamen?.Trim(), "APROBADO", StringComparison.OrdinalIgnoreCase);
-            if (aprobado)
-            {
-                float m = 3f;
-                DrawLine(boxX + m, boxYTop + m, boxX + boxSize - m, boxYTop + boxSize - m, 1.2f);
-                DrawLine(boxX + m, boxYTop + boxSize - m, boxX + boxSize - m, boxYTop + m, 1.2f);
-            }
+            // El recuadro se imprime vacío (sin X): lo marca a mano quien firma.
 
             // =========================
             // Comentarios / observaciones
             // =========================
-            DrawText("Comentarios  u  observaciones:", 70f, commentsY, font, 9.6f);
+            DrawText("Comentarios u observaciones:", 70f, commentsY, font, 9.6f);
 
             float lineLeft = 70f;
             float lineRight = 575f;
@@ -763,7 +802,7 @@ public sealed class ConstanciaAceptacionReportePreliminarRequest
             float firmaLeft = 70f;
             float firmaRight = 300f;
             DrawLine(firmaLeft, firmaY, firmaRight, firmaY, 1f);
-            DrawText("Nombre y Firma del Asesor interno", 70f, firmaTextoY, fontBold, 9.9f);
+            DrawText("Nombre y Firma del Docente", 70f, firmaTextoY, fontBold, 9.9f);
 
             if (!string.IsNullOrWhiteSpace(req.AsesorInterno))
             {
@@ -786,6 +825,27 @@ public sealed class ConstanciaAceptacionReportePreliminarRequest
 
             pdf.Close();
             return output.ToArray();
+        }
+
+        /// <summary>
+        /// "M.C. IDARH CLAUDIO MATADAMAS ORTIZ" → "C. Idarh Claudio Matadamas Ortiz"
+        /// (formato del oficio de aceptación real). Si no hay un nombre válido deja la línea para llenarse a mano.
+        /// </summary>
+        private static string FormatearDestinatarioJefe(string? nombre, CultureInfo esMx)
+        {
+            var n = (nombre ?? "").Trim();
+
+            // Sin nombre, o llegó el cargo en lugar del nombre → línea en blanco
+            if (n.Length == 0 || n.IndexOf("DEPARTAMENTO", StringComparison.OrdinalIgnoreCase) >= 0)
+                return "C. ______________________________";
+
+            // Quitar grado académico al inicio (M.C., Dr., Ing., etc.)
+            n = System.Text.RegularExpressions.Regex.Replace(
+                n, @"^(M\.\s?C\.|M\.\s?A\.|M\.\s?I\.|DRA?\.|ING\.|LIC\.|MTR[OA]\.)\s*", "",
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+            n = esMx.TextInfo.ToTitleCase(n.ToLower(esMx));
+            return "C. " + n;
         }
 
         public byte[] BuildOficiosAsignacionRevisores(byte[] templatePdf, OficiosAsignacionRevisoresRequest req)
@@ -2292,348 +2352,70 @@ DrawText("MMH/mmvh", left, ccp2Y, font, 8.8f);
             using var writer = new PdfWriter(ms);
             using var outPdf = new PdfDocument(writer);
 
-            var font = PdfFontFactory.CreateFont(StandardFonts.HELVETICA);
-            var fontBold = PdfFontFactory.CreateFont(StandardFonts.HELVETICA_BOLD);
             var esMx = new CultureInfo("es-MX");
+            string fechaTxt = $"{req.Ciudad}, {req.Fecha.ToString("dd'/'MMMM'/'yyyy", esMx)}";
+            string asunto = string.IsNullOrWhiteSpace(req.Asunto) ? "Revisor de Residencia Profesional" : req.Asunto;
 
-            // ========= helpers para medir texto =========
-            List<string> WrapLines(string text, PdfFont f, float size, float maxWidth)
-            {
-                text ??= "";
-                var words = text.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-                var lines = new List<string>();
-                string line = "";
-
-                foreach (var w in words)
-                {
-                    var test = string.IsNullOrEmpty(line) ? w : $"{line} {w}";
-                    if (f.GetWidth(test, size) > maxWidth && !string.IsNullOrEmpty(line))
-                    {
-                        lines.Add(line);
-                        line = w;
-                    }
-                    else line = test;
-                }
-
-                if (!string.IsNullOrEmpty(line)) lines.Add(line);
-                return lines;
-            }
-
-            float MeasureRowHeight(OficioRevisorRow r, float fontSize, float leading, float pad,
-                                   float wNo, float wEst, float wProy, float wAse)
-            {
-                // líneas por celda
-                int lNo = Math.Max(1, WrapLines(r?.NoControl ?? "—", font, fontSize, wNo - (pad * 2)).Count);
-                int lEst = Math.Max(1, WrapLines(r?.Estudiante ?? "—", font, fontSize, wEst - (pad * 2)).Count);
-                int lPro = Math.Max(1, WrapLines(r?.Proyecto ?? "—", font, fontSize, wProy - (pad * 2)).Count);
-                int lAs = Math.Max(1, WrapLines(r?.Asesor ?? "—", font, fontSize, wAse - (pad * 2)).Count);
-
-                int maxLines = Math.Max(Math.Max(lNo, lEst), Math.Max(lPro, lAs));
-                float h = (maxLines * leading) + (pad * 2);
-
-                // altura mínima “tipo foto”
-                return Math.Max(26f, h);
-            }
-
-            // ========= layout base (ajustable) =========
-            const float left = 72f;
-            const float rightMargin = 72f;
-
-            const float headerY = 150f;     // fecha
-            const float oficioY = 172f;     // oficio
-            const float asuntoY = 198f;
-
-            const float destinatarioTop = 250f;
-            const float introTop = 320f;
-
-            const float tableTop = 400f;    // desde arriba
-            const float footerSafe = 70f;   // para no invadir pie/imagenes del template
-
-            // firma / cierre SOLO en última página
-            const float cierreGap = 18f;
-            const float atentamenteY = 610f;
-            const float firmaNombreY = 650f;
-            const float firmaCargoY = 665f;
-            const float ccpY = 720f;
-
-            // columnas “como foto”
-            float[] colW = { 90f, 140f, 220f, 90f };
-            float pad = 4f;
-            float fontSize = 9.8f;
-            float leading = 12f;
-            float headerH = 22f;
-
-            // ancho total usable
-            float pageW = PageSize.LETTER.GetWidth();
-            float pageH = PageSize.LETTER.GetHeight();
-            float right = pageW - rightMargin;
-            float width = right - left;
-
-            // Asegurar que la tabla “quepa” con tu width real
-            // Si width difiere, reescala columnas proporcionalmente
-            float sumCol = colW.Sum();
-            float scale = (width / sumCol);
-            colW = colW.Select(w => w * scale).ToArray();
-
-            float wNo = colW[0], wEst = colW[1], wProy = colW[2], wAse = colW[3];
+            const float size = 9.6f, lead = 11.4f;
 
             foreach (var rev in req.Revisores)
             {
-                var allRows = (rev.Rows ?? new List<OficioRevisorRow>()).ToList();
+                var revisor = rev;
+
+                // 1 revisor = 1 grupo de páginas (fecha/oficio/asunto + destinatario en cada página)
+                var o = new C_Oficio(this, outPdf, templatePdf,
+                    h => C_DrawOficioHeader(h, fechaTxt, req.Oficio, asunto,
+                                            revisor.RevisorNombre, revisor.RevisorCargoLinea1));
+                o.NewPage();
+
+                var allRows = (revisor.Rows ?? new List<OficioRevisorRow>()).ToList();
                 if (allRows.Count == 0)
-                {
                     allRows.Add(new OficioRevisorRow { NoControl = "—", Estudiante = "—", Proyecto = "—", Asesor = "—" });
-                }
 
-                int idx = 0;
-                bool firstPage = true;
-
-                while (idx < allRows.Count)
+                o.Para(new[]
                 {
-                    // 1) Crear página con template (siempre)
-                    PdfPage page;
-                    if (templatePdf != null && templatePdf.Length > 0)
-                    {
-                        using var src = new PdfDocument(new PdfReader(new MemoryStream(templatePdf)));
-                        src.CopyPagesTo(1, 1, outPdf);
-                        page = outPdf.GetLastPage();
-                    }
-                    else
-                    {
-                        page = outPdf.AddNewPage(PageSize.LETTER);
-                    }
+                    new C_Oficio.Run("Por este conducto informo a usted que ha sido asignado para fungir como "),
+                    new C_Oficio.Run("Revisor", true),
+                    new C_Oficio.Run(" de los Proyectos de Residencia Profesional que a continuación se describen:")
+                }, size, lead, 8f);
 
-                    var ps = page.GetPageSize();
-                    pageW = ps.GetWidth();
-                    pageH = ps.GetHeight();
-                    right = pageW - rightMargin;
-                    width = right - left;
+                // Nº CONTROL | ESTUDIANTE | PROYECTO | ASESOR (todo centrado, como en el oficio real)
+                var colW = C_Oficio.Cols(o.Width, 72f, 112f, 176f, 108f);
 
-                    float Y(float yFromTop) => pageH - yFromTop;
+                var header = new[]
+                {
+                    new C_Oficio.Cell("Nº CONTROL:", true, TextAlignment.CENTER),
+                    new C_Oficio.Cell("ESTUDIANTE", true, TextAlignment.CENTER),
+                    new C_Oficio.Cell("PROYECTO", true, TextAlignment.CENTER),
+                    new C_Oficio.Cell("ASESOR", true, TextAlignment.CENTER),
+                };
 
-                    var pdfCanvas = new PdfCanvas(page);
+                string Up(string s) => string.IsNullOrWhiteSpace(s) ? "—" : s.Trim().ToUpperInvariant();
 
-                    // ✅ FIX: esta era la única variante de Build* sin compensación de
-                    // flip vertical. El membrete escaneado trae "1 0 0 -1 0 h cm" en su
-                    // propio content stream (se auto-corrige al verse), pero el texto que
-                    // dibujamos encima NO tenía esa misma compensación, así que quedaba
-                    // al revés respecto al membrete. Se replica la misma detección que
-                    // usan BuildOficiosAsignacionRevisores / BuildOficioAsignacionAsesorInterno / etc.
-                    {
-                        var pageRotation = page.GetRotation();
-                        bool hasYFlip = false;
+                var filas = allRows.Select(r => new[]
+                {
+                    new C_Oficio.Cell(string.IsNullOrWhiteSpace(r.NoControl) ? "—" : r.NoControl.Trim(), false, TextAlignment.CENTER),
+                    new C_Oficio.Cell(Up(r.Estudiante), false, TextAlignment.CENTER),
+                    new C_Oficio.Cell(Up(r.Proyecto), false, TextAlignment.CENTER),
+                    new C_Oficio.Cell(Up(r.Asesor), false, TextAlignment.CENTER),
+                }).ToList();
 
-                        if (pageRotation == 0)
-                        {
-                            try
-                            {
-                                var pageDict = page.GetPdfObject();
-                                var contentsObj = pageDict.Get(iText.Kernel.Pdf.PdfName.Contents);
-                                iText.Kernel.Pdf.PdfStream? firstStream = null;
+                o.GridPaged(colW, header, filas, 9.2f, 11f, 3f, 18f);
+                o.Y += 12f;
 
-                                if (contentsObj is iText.Kernel.Pdf.PdfArray arr && arr.Size() > 0)
-                                    firstStream = arr.GetAsStream(0);
-                                else if (contentsObj is iText.Kernel.Pdf.PdfStream s)
-                                    firstStream = s;
+                o.Para(new[] { new C_Oficio.Run(
+                    "Así mismo, le solicito dar el seguimiento pertinente a la realización del proyecto aplicando los lineamientos establecidos para ello, en el procedimiento para Residencia Profesional.") },
+                    size, lead, 7f);
+                o.Para(new[] { new C_Oficio.Run(
+                    "Agradezco de antemano su valioso apoyo en esta importante actividad para la formación profesional de nuestros estudiantados.") },
+                    size, lead, 4f);
 
-                                if (firstStream != null)
-                                {
-                                    var bytes = firstStream.GetBytes();
-                                    var preview = System.Text.Encoding.Latin1.GetString(bytes, 0,
-                                        Math.Min(bytes.Length, 80));
-                                    hasYFlip = System.Text.RegularExpressions.Regex.IsMatch(
-                                        preview, @"1\s+0\s+0\s+-1\s+0\s+[\d.]+\s+cm");
-                                }
-                            }
-                            catch { /* si falla la detección, no aplicamos nada */ }
-                        }
-
-                        if (hasYFlip)
-                            pdfCanvas.ConcatMatrix(1, 0, 0, -1, 0, pageH);
-                        else if (pageRotation == 90)
-                            pdfCanvas.ConcatMatrix(0, 1, -1, 0, pageH, 0);
-                        else if (pageRotation == 180)
-                            pdfCanvas.ConcatMatrix(-1, 0, 0, -1, pageW, pageH);
-                        else if (pageRotation == 270)
-                            pdfCanvas.ConcatMatrix(0, -1, 1, 0, 0, pageW);
-                    }
-
-                    var canvas = new iText.Layout.Canvas(pdfCanvas, ps);
-
-                    void AbsText(string text, float x, float yFromTop, PdfFont f, float size, TextAlignment align)
-                    {
-                        var p = new Paragraph(text ?? "")
-                            .SetFont(f)
-                            .SetFontSize(size)
-                            .SetMargin(0)
-                            .SetPadding(0);
-                        canvas.ShowTextAligned(p, x, Y(yFromTop), align);
-                    }
-
-                    // ========== Encabezado (en TODAS las páginas) ==========
-                    string fechaTxt = $"{req.Ciudad} {req.Fecha.ToString("dd'/'MMMM'/'yyyy", esMx)}";
-                    AbsText(fechaTxt, right, headerY, font, 10.5f, TextAlignment.RIGHT);
-                    AbsText($"OFICIO No. {req.Oficio}", right, oficioY, fontBold, 10.5f, TextAlignment.RIGHT);
-
-                    AbsText("ASUNTO:", right - 180f, asuntoY, fontBold, 10.5f, TextAlignment.LEFT);
-                    AbsText(req.Asunto ?? "Revisor de Residencia Profesional", right - 125f, asuntoY, font, 10.5f, TextAlignment.LEFT);
-
-                    // ========== Destinatario (en TODAS) ==========
-                    float y = destinatarioTop;
-                    AbsText((rev.RevisorNombre ?? "").ToUpperInvariant(), left, y, fontBold, 10.8f, TextAlignment.LEFT);
-                    y += 16f;
-                    AbsText((rev.RevisorCargoLinea1 ?? "").ToUpperInvariant(), left, y, fontBold, 10.2f, TextAlignment.LEFT);
-                    y += 18f;
-                    AbsText("P R E S E N T E", left, y, fontBold, 10.8f, TextAlignment.LEFT);
-
-                    // ========== Intro (solo en primera página del revisor) ==========
-                    if (firstPage)
-                    {
-                        var intro = new Paragraph(
-                            "Por este conducto informo a usted que ha sido asignado para fungir como " +
-                            "Revisor de los Proyectos de Residencia Profesional que a continuación se describen:")
-                            .SetFont(font)
-                            .SetFontSize(10.5f)
-                            .SetFixedLeading(14f)
-                            .SetMargin(0);
-
-                        float introBoxH = 55f;
-                        intro.SetFixedPosition(left, Y(introTop) - introBoxH, width);
-                        canvas.Add(intro);
-                    }
-
-                    // ========== Definir cuánto espacio tiene la tabla en ESTA hoja ==========
-                    // Si es la ÚLTIMA hoja (o potencialmente última), reservamos cierre+firma.
-                    // Si no, dejamos la tabla crecer más (pero sin invadir el footer).
-                    bool isLastPageCandidate;
-
-                    // Heurística: intentamos meter el resto; si NO cabe con espacio "final", partimos.
-                    // Espacio final:
-                    float maxTableEndTopFinal = atentamenteY - 18f; // antes de "ATENTAMENTE"
-                    float maxTableHeightFinal = maxTableEndTopFinal - tableTop;
-
-                    // Espacio intermedio:
-                    float maxTableEndTopMid = pageH - footerSafe;   // hasta antes del pie
-                    float maxTableHeightMid = maxTableEndTopMid - tableTop;
-
-                    // Primero probamos si todo lo restante cabe en "final"
-                    float neededHFinal = headerH;
-                    for (int j = idx; j < allRows.Count; j++)
-                    {
-                        neededHFinal += MeasureRowHeight(allRows[j], fontSize, leading, pad, wNo, wEst, wProy, wAse);
-                        if (neededHFinal > maxTableHeightFinal) break;
-                    }
-                    isLastPageCandidate = (neededHFinal <= maxTableHeightFinal);
-
-                    float maxTableHeight = isLastPageCandidate ? maxTableHeightFinal : maxTableHeightMid;
-
-                    // ========== Seleccionar filas que caben ==========
-                    float used = headerH;
-                    var takeRows = new List<OficioRevisorRow>();
-
-                    while (idx < allRows.Count)
-                    {
-                        float rh = MeasureRowHeight(allRows[idx], fontSize, leading, pad, wNo, wEst, wProy, wAse);
-                        if (used + rh > maxTableHeight)
-                            break;
-
-                        takeRows.Add(allRows[idx]);
-                        used += rh;
-                        idx++;
-                    }
-
-                    // (seguro) si una fila gigantesca no cabe, forzamos 1
-                    if (takeRows.Count == 0 && idx < allRows.Count)
-                    {
-                        takeRows.Add(allRows[idx]);
-                        idx++;
-                    }
-
-                    // ========== Construir tabla (fixed) con altura exacta ==========
-                    float tableH = used;
-                    float tableBottom = Y(tableTop) - tableH;
-
-                    var table = new Table(UnitValue.CreatePointArray(colW))
-                        .SetWidth(UnitValue.CreatePointValue(width))
-                        .SetFixedPosition(left, tableBottom, width)
-                        .SetFont(font)
-                        .SetFontSize(fontSize);
-
-                    Cell MakeCell(string txt, bool bold = false, bool header = false, float? height = null)
-                    {
-                        var para = new Paragraph(txt ?? "")
-                            .SetFont(bold ? fontBold : font)
-                            .SetFontSize(fontSize)
-                            .SetFixedLeading(leading)
-                            .SetMargin(0);
-
-                        var c = new Cell().Add(para)
-                            .SetPadding(pad)
-                            .SetBorder(new SolidBorder(ColorConstants.BLACK, 1))
-                            .SetVerticalAlignment(VerticalAlignment.MIDDLE);
-
-                        if (header) c.SetBackgroundColor(new DeviceGray(0.90f));
-                        if (height.HasValue) c.SetHeight(height.Value);
-
-                        return c;
-                    }
-
-                    // header
-                    table.AddHeaderCell(MakeCell("N° CONTROL:", bold: true, header: true, height: headerH));
-                    table.AddHeaderCell(MakeCell("ESTUDIANTE", bold: true, header: true, height: headerH));
-                    table.AddHeaderCell(MakeCell("PROYECTO", bold: true, header: true, height: headerH));
-                    table.AddHeaderCell(MakeCell("ASESOR", bold: true, header: true, height: headerH));
-
-                    // rows
-                    foreach (var r in takeRows)
-                    {
-                        float rh = MeasureRowHeight(r, fontSize, leading, pad, wNo, wEst, wProy, wAse);
-
-                        table.AddCell(MakeCell(r.NoControl, height: rh));
-                        table.AddCell(MakeCell(r.Estudiante, height: rh));
-                        table.AddCell(MakeCell(r.Proyecto, height: rh));
-                        table.AddCell(MakeCell(r.Asesor, height: rh));
-                    }
-
-                    canvas.Add(table);
-
-                    // ========== Cierre + firma SOLO si ya se acabaron filas ==========
-                    bool lastPage = (idx >= allRows.Count);
-                    if (lastPage)
-                    {
-                        float cierreTop = tableTop + tableH + cierreGap;
-
-                        var cierre = new Paragraph(
-                            "Así mismo, le solicito dar el seguimiento pertinente a la realización del proyecto aplicando los lineamientos\n" +
-                            "establecidos para ello, en el procedimiento para Residencia Profesional.\n\n" +
-                            "Agradezco de antemano su valioso apoyo en esta importante actividad para la formación profesional de nuestros\n" +
-                            "estudiantes.")
-                            .SetFont(font)
-                            .SetFontSize(10.5f)
-                            .SetFixedLeading(14f)
-                            .SetMargin(0);
-
-                        float cierreBoxH = 120f;
-                        cierre.SetFixedPosition(left, Y(cierreTop) - cierreBoxH, width);
-                        canvas.Add(cierre);
-
-                        AbsText("A T E N T A M E N T E", left, atentamenteY, fontBold, 10.5f, TextAlignment.LEFT);
-                        AbsText(req.FirmaNombre ?? "", left, firmaNombreY, fontBold, 10.5f, TextAlignment.LEFT);
-                        AbsText(req.FirmaCargoLinea1 ?? "", left, firmaCargoY, fontBold, 10.0f, TextAlignment.LEFT);
-
-                        AbsText("ccp. Expediente", left, ccpY, font, 9.5f, TextAlignment.LEFT);
-                        AbsText("MMH/mmvh", left, ccpY + 14f, font, 9.5f, TextAlignment.LEFT);
-                    }
-
-                    canvas.Close();
-                    firstPage = false;
-                }
+                C_DrawFirmaBloque(o, req.FirmaNombre, req.FirmaCargoLinea1);
             }
 
             outPdf.Close();
             return ms.ToArray();
         }
-
 
 
 

@@ -7783,11 +7783,11 @@
   "project": {
     "version": "1.0.0",
     "restore": {
-      "projectUniqueName": "C:\\Users\\osihe\\Documentos\\WebApiVinculacionProyectosV2-master\\WebApiVinculacionProyectosV2-master\\webApiVinculacionProyectosV2\\WebApiVinculacionProyectosV2.csproj",
+      "projectUniqueName": "C:\\Users\\osihe\\Documentos\\WebApiVinculacionProyectosV2\\WebApiVinculacionProyectosV2.csproj",
       "projectName": "WebApiVinculacionProyectosV2",
-      "projectPath": "C:\\Users\\osihe\\Documentos\\WebApiVinculacionProyectosV2-master\\WebApiVinculacionProyectosV2-master\\webApiVinculacionProyectosV2\\WebApiVinculacionProyectosV2.csproj",
+      "projectPath": "C:\\Users\\osihe\\Documentos\\WebApiVinculacionProyectosV2\\WebApiVinculacionProyectosV2.csproj",
       "packagesPath": "C:\\Users\\osihe\\.nuget\\packages\\",
-      "outputPath": "C:\\Users\\osihe\\Documentos\\WebApiVinculacionProyectosV2-master\\WebApiVinculacionProyectosV2-master\\webApiVinculacionProyectosV2\\obj\\",
+      "outputPath": "C:\\Users\\osihe\\Documentos\\WebApiVinculacionProyectosV2\\obj\\",
       "projectStyle": "PackageReference",
       "configFilePaths": [
         "C:\\Users\\osihe\\AppData\\Roaming\\NuGet\\NuGet.Config"
@@ -7883,7 +7883,7 @@
             "privateAssets": "all"
           }
         },
-        "runtimeIdentifierGraphPath": "C:\\Program Files\\dotnet\\sdk\\8.0.425/PortableRuntimeIdentifierGraph.json"
+        "runtimeIdentifierGraphPath": "C:\\Program Files\\dotnet\\sdk\\8.0.426/PortableRuntimeIdentifierGraph.json"
       }
     }
   }

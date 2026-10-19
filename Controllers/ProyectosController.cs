@@ -1263,7 +1263,7 @@ public async Task<IActionResult> CrearInvitaciones(int idProyecto, [FromBody] Li
         {
             var doc = await _context.ProyectoDocumentos
                 .AsNoTracking()
-                .FirstOrDefaultAsync(x => x.IdProyecto == idProyecto);
+                .FirstOrDefaultAsync(x => x.IdProyecto == idProyecto && !x.NombreOriginal.StartsWith("Aceptacion_Anteproyecto_"));
 
             if (doc == null)
             {
@@ -1328,7 +1328,7 @@ public async Task<IActionResult> CrearInvitaciones(int idProyecto, [FromBody] Li
 
             // Upsert: si ya existe doc para el proyecto, reemplaza
             var old = await _context.ProyectoDocumentos
-                .FirstOrDefaultAsync(x => x.IdProyecto == idProyecto);
+                .FirstOrDefaultAsync(x => x.IdProyecto == idProyecto && !x.NombreOriginal.StartsWith("Aceptacion_Anteproyecto_"));
 
             if (old != null)
             {
@@ -1382,7 +1382,7 @@ public async Task<IActionResult> CrearInvitaciones(int idProyecto, [FromBody] Li
         {
             var doc = await _context.ProyectoDocumentos
                 .AsNoTracking()
-                .FirstOrDefaultAsync(x => x.IdProyecto == idProyecto);
+                .FirstOrDefaultAsync(x => x.IdProyecto == idProyecto && !x.NombreOriginal.StartsWith("Aceptacion_Anteproyecto_"));
 
             if (doc == null)
                 return NotFound("No hay documento para este proyecto.");
@@ -1408,7 +1408,7 @@ public async Task<IActionResult> CrearInvitaciones(int idProyecto, [FromBody] Li
         public async Task<IActionResult> DeleteDocumento(int idProyecto)
         {
             var doc = await _context.ProyectoDocumentos
-                .FirstOrDefaultAsync(x => x.IdProyecto == idProyecto);
+                .FirstOrDefaultAsync(x => x.IdProyecto == idProyecto && !x.NombreOriginal.StartsWith("Aceptacion_Anteproyecto_"));
 
             if (doc == null)
                 return NotFound("No hay documento para este proyecto.");
@@ -1699,7 +1699,8 @@ public async Task<IActionResult> CrearInvitaciones(int idProyecto, [FromBody] Li
 
         // ════════════════════════════════════════════════════════════════════
         // POST /api/Proyectos/{idProyecto}/AutoAsignarme
-        // El docente logueado se asigna (1 por docente) y recibe el oficio PDF.
+        // El docente logueado se asigna (1 por docente). NO genera oficio:
+        // el oficio lo genera el estudiante o la jefa de vinculación.
         // Body: { "tipoClave": "ASESOR_INTERNO" | "REVISOR_ANTEPROYECTO" }
         // ════════════════════════════════════════════════════════════════════
         [Authorize]
@@ -1835,53 +1836,15 @@ public async Task<IActionResult> CrearInvitaciones(int idProyecto, [FromBody] Li
                 await _context.SaveChangesAsync();
             }
 
-            // ── Generar oficio PDF ───────────────────────────────────────────
-            var periodo = await _context.PeriodosAcademicos.AsNoTracking()
-                .FirstOrDefaultAsync(p => p.Id == proyecto.IdPeriodoAcademico);
-
-            var mem = await _context.PeriodosMembrentados.AsNoTracking()
-                .OrderByDescending(x => x.Id)
-                .FirstOrDefaultAsync(x => x.PeriodoAcademicoId == proyecto.IdPeriodoAcademico);
-
-            if (mem == null || mem.PdfBytes == null || mem.PdfBytes.Length == 0)
-                return NotFound("No se encontró el membrentado para el periodo académico del proyecto. Sube el PDF en Períodos.");
-
-            // Datos del proyecto
-            var periodoTxt   = periodo?.Nombre?.ToUpperInvariant() ?? "—";
-            var firmaNombre  = periodo?.JefeDepartamentoNombre?.Trim() ?? "JEFA(E) DEL DEPARTAMENTO";
-            var docenteNombre = $"{docente.Nombre} {docente.ApellidoPaterno} {docente.ApellidoMaterno}".Trim().ToUpperInvariant();
-
-            var numeroOficio = $"{(periodo?.PrefijoOficio ?? "JV")}-{(periodo?.ConsecutivoOficio ?? 1):000}/{(DateTime.Today.Year % 100):00}";
-            if (periodo != null)
+            // Los docentes ya NO generan oficios: solo se registra la asignación.
+            // Los oficios los generan el estudiante (desde Seguimiento) o la jefa de vinculación.
+            return Ok(new
             {
-                var periodoUpd = await _context.PeriodosAcademicos.FindAsync(periodo.Id);
-                if (periodoUpd != null) { periodoUpd.ConsecutivoOficio++; await _context.SaveChangesAsync(); }
-            }
-
-            // Estudiantes del proyecto
-            var estudianteRows = await (
-                from e in _context.Estudiantes.AsNoTracking()
-                where e.idProyecto == idProyecto
-                select new {
-                    e.noControl,
-                    Nombre = (e.Nombre ?? "") + " " + (e.ApellidoPaterno ?? "") + " " + (e.ApellidoMaterno ?? "")
-                }
-            ).ToListAsync();
-
-            var empresa = await _context.Empresas.AsNoTracking()
-                .Where(em => em.Id == proyecto.IdEmpresa).Select(em => em.Nombre)
-                .FirstOrDefaultAsync() ?? "—";
-
-            var carrera = await (
-                from est in _context.Estudiantes.AsNoTracking()
-                join car in _context.Carreras.AsNoTracking() on est.idcarrera equals car.Id into cars
-                from car in cars.DefaultIfEmpty()
-                where est.idProyecto == idProyecto
-                select car != null ? car.Descripcion : null
-            ).FirstOrDefaultAsync() ?? "—";
-
-        var (pdfBytes, pdfFileName) = await GenerarOficioConsolidadoAsync(docente.Id, clave);
-        return File(pdfBytes, "application/pdf", pdfFileName);
+                ok = true,
+                idProyecto,
+                tipoClave = clave,
+                mensaje = "Asignación registrada correctamente."
+            });
         }
 
                 private int? GetUserIdOrNull()

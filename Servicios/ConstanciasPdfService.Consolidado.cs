@@ -57,6 +57,7 @@ using PdfWriter = iText.Kernel.Pdf.PdfWriter;
 public sealed class ProyectoAsesorInternoItem
 {
     public string NumeroControl { get; set; } = "";      // si hay varios residentes, se puede dejar vacío
+    public List<string> NumerosControl { get; set; } = new(); // uno por residente, en el mismo orden que Residentes
     public string NombreProyecto { get; set; } = "";
     public string Empresa { get; set; } = "";
     public string Carrera { get; set; } = "";
@@ -199,7 +200,296 @@ namespace WebApiVinculacionProyectosV2.Services
         }
 
         // ═══════════════════════════════════════════════════════════════════
+        // FORMATO OFICIAL (comunes a los oficios de asignación)
+        //
+        // Se replica el formato de los oficios reales firmados por la Jefatura:
+        //   • Fecha, No. de oficio y asunto alineados a la derecha.
+        //   • Destinatario en 3 líneas (nombre / CATEDRATICO(A) DEL I.T. DE OAXACA / P R E S E N T E).
+        //   • "A T E N T A M E N T E" a la izquierda + lema en cursiva + espacio para firma y sello.
+        //   • Firma con el nombre y cargo del Jefe, y "ccp. Expediente / ICMO/mmvh*".
+        // ═══════════════════════════════════════════════════════════════════
+        private const string C_Lema1 = "Excelencia en Educación Tecnológica®";
+        private const string C_Lema2 = "\"Tecnología Propia e Independencia Económica\"";
+        private const string C_CargoJefe = "JEFE DEL DEPARTAMENTO DE SISTEMAS Y COMPUTACIÓN";
+        private const string C_CcpIniciales = "ICMO/mmvh*";
+
+        /// <summary>Escritor de oficios: maneja páginas con membrete, cursor vertical, párrafos y tablas.</summary>
+        private sealed class C_Oficio
+        {
+            public sealed class Run
+            {
+                public string T; public bool Bold;
+                public Run(string t, bool bold = false) { T = t; Bold = bold; }
+            }
+
+            public sealed class Cell
+            {
+                public string T; public bool Bold; public TextAlignment Al;
+                public Cell(string t, bool bold = false, TextAlignment al = TextAlignment.LEFT) { T = t ?? ""; Bold = bold; Al = al; }
+            }
+
+            private readonly ConstanciasPdfService _svc;
+            private readonly PdfDocument _pdf;
+            private readonly byte[] _tpl;
+            private readonly Action<C_Oficio> _header;
+
+            public readonly PdfFont F, B, I;
+            public PdfPage Page = null!;
+            public PdfCanvas Cv = null!;
+            public float PageW, PageH, Right, Width;
+            public readonly float Left = 72f;
+            public float Y;                         // cursor (medido desde arriba de la página)
+            public const float BodyTop = 268f;      // donde empieza el cuerpo, debajo del destinatario
+            public const float BodyBottom = 652f;   // el cuerpo no pasa de aquí (ccp y pie del membrete van abajo)
+
+            public C_Oficio(ConstanciasPdfService svc, PdfDocument pdf, byte[] tpl, Action<C_Oficio> header)
+            {
+                _svc = svc; _pdf = pdf; _tpl = tpl; _header = header;
+                F = PdfFontFactory.CreateFont(StandardFonts.HELVETICA);
+                B = PdfFontFactory.CreateFont(StandardFonts.HELVETICA_BOLD);
+                I = PdfFontFactory.CreateFont(StandardFonts.HELVETICA_OBLIQUE);
+            }
+
+            public void NewPage()
+            {
+                Page = _svc.C_NewTemplatedPage(_pdf, _tpl);
+                var ps = Page.GetPageSize();
+                PageW = ps.GetWidth(); PageH = ps.GetHeight();
+                Right = PageW - 72f; Width = Right - Left;
+                Cv = new PdfCanvas(Page);
+                Y = BodyTop;
+                _header(this);
+            }
+
+            public void Ensure(float h) { if (Y + h > BodyBottom) NewPage(); }
+
+            // ── Primitivas ───────────────────────────────────────────────
+            public float W(string t, PdfFont f, float size) => f.GetWidth(t ?? "", size);
+
+            public void Text(string t, float x, float baseline, PdfFont f, float size)
+            {
+                Cv.BeginText();
+                Cv.SetFontAndSize(f, size);
+                Cv.MoveText(x, PageH - baseline);
+                Cv.ShowText(t ?? "");
+                Cv.EndText();
+            }
+
+            public void TextRight(string t, float rightX, float baseline, PdfFont f, float size)
+                => Text(t, rightX - W(t, f, size), baseline, f, size);
+
+            // ── Párrafos con negritas ────────────────────────────────────
+            private List<List<(string w, bool b, bool glue)>> WrapRuns(IEnumerable<Run> runs, float size, float maxW)
+            {
+                var lines = new List<List<(string, bool, bool)>>();
+                var cur = new List<(string, bool, bool)>();
+                float curW = 0f, space = F.GetWidth(" ", size);
+                bool hasPrev = false, prevEndsSpace = false;
+
+                foreach (var r in runs)
+                {
+                    var txt = r.T ?? "";
+                    bool startsSpace = txt.Length > 0 && char.IsWhiteSpace(txt[0]);
+                    bool first = true;
+                    foreach (var w in txt.Split(' ', StringSplitOptions.RemoveEmptyEntries))
+                    {
+                        var f = r.Bold ? B : F;
+                        float ww = f.GetWidth(w, size);
+                        bool glue = first && hasPrev && !startsSpace && !prevEndsSpace;
+                        first = false;
+                        float add = cur.Count == 0 ? ww : (glue ? ww : space + ww);
+                        if (cur.Count > 0 && curW + add > maxW)
+                        {
+                            lines.Add(cur); cur = new List<(string, bool, bool)>(); curW = 0f; add = ww; glue = false;
+                        }
+                        cur.Add((w, r.Bold, glue));
+                        curW += add;
+                        hasPrev = true;
+                    }
+                    if (txt.Length > 0) prevEndsSpace = char.IsWhiteSpace(txt[txt.Length - 1]);
+                }
+                if (cur.Count > 0) lines.Add(cur);
+                return lines;
+            }
+
+            public float ParaHeight(IEnumerable<Run> runs, float size, float leading)
+                => WrapRuns(runs, size, Width).Count * leading;
+
+            public void Para(IEnumerable<Run> runs, float size, float leading, float gapAfter)
+            {
+                var lines = WrapRuns(runs, size, Width);
+                Ensure(lines.Count * leading);
+                float space = F.GetWidth(" ", size);
+
+                foreach (var line in lines)
+                {
+                    float x = Left;
+                    bool firstTok = true;
+                    foreach (var (w, b, glue) in line)
+                    {
+                        if (!firstTok && !glue) x += space;
+                        var f = b ? B : F;
+                        Text(w, x, Y + size, f, size);
+                        x += f.GetWidth(w, size);
+                        firstTok = false;
+                    }
+                    Y += leading;
+                }
+                Y += gapAfter;
+            }
+
+            // ── Tablas con bordes ────────────────────────────────────────
+            public static float[] Cols(float totalWidth, params float[] proportions)
+            {
+                float sum = proportions.Sum();
+                return proportions.Select(p => p * totalWidth / sum).ToArray();
+            }
+
+            private List<string> CellLines(Cell c, float colW, float size, float pad)
+            {
+                var f = c.Bold ? B : F;
+                var res = new List<string>();
+                foreach (var seg in (c.T ?? "").Split('\n'))
+                {
+                    var wl = C_WrapLines(seg, f, size, colW - pad * 2);
+                    if (wl.Count == 0) wl.Add("");
+                    res.AddRange(wl);
+                }
+                return res;
+            }
+
+            public float RowHeight(Cell[] cells, float[] colW, float size, float leading, float pad, float min)
+            {
+                int max = 1;
+                for (int i = 0; i < cells.Length; i++)
+                    max = Math.Max(max, CellLines(cells[i], colW[i], size, pad).Count);
+                return Math.Max(min, max * leading + pad * 2);
+            }
+
+            public void DrawRow(Cell[] cells, float[] colW, float top, float h, float size, float leading, float pad)
+            {
+                float cx = Left;
+                for (int i = 0; i < cells.Length; i++)
+                {
+                    Cv.SaveState();
+                    Cv.SetLineWidth(0.8f);
+                    Cv.Rectangle(cx, PageH - (top + h), colW[i], h);
+                    Cv.Stroke();
+                    Cv.RestoreState();
+
+                    var f = cells[i].Bold ? B : F;
+                    var lines = CellLines(cells[i], colW[i], size, pad);
+                    float textH = lines.Count * leading;
+                    float ty = top + (h - textH) / 2f;
+
+                    for (int l = 0; l < lines.Count; l++)
+                    {
+                        float tw = f.GetWidth(lines[l], size);
+                        float x = cells[i].Al == TextAlignment.CENTER ? cx + (colW[i] - tw) / 2f
+                                : cells[i].Al == TextAlignment.RIGHT ? cx + colW[i] - pad - tw
+                                : cx + pad;
+                        Text(lines[l], x, ty + l * leading + size, f, size);
+                    }
+                    cx += colW[i];
+                }
+            }
+
+            /// <summary>Tabla que cabe completa en una página (si no cabe, salta de página antes).</summary>
+            public void GridBlock(float[] colW, List<Cell[]> rows, float size, float leading, float pad, float min)
+            {
+                float total = rows.Sum(r => RowHeight(r, colW, size, leading, pad, min));
+                Ensure(total);
+                foreach (var r in rows)
+                {
+                    float rh = RowHeight(r, colW, size, leading, pad, min);
+                    DrawRow(r, colW, Y, rh, size, leading, pad);
+                    Y += rh;
+                }
+            }
+
+            /// <summary>Tabla con encabezado que se repite si continúa en otra página.</summary>
+            public void GridPaged(float[] colW, Cell[] header, List<Cell[]> rows, float size, float leading, float pad, float min)
+            {
+                float hH = RowHeight(header, colW, size, leading, pad, min);
+                float firstH = rows.Count > 0 ? RowHeight(rows[0], colW, size, leading, pad, min) : 0f;
+                Ensure(hH + firstH);
+
+                DrawRow(header, colW, Y, hH, size, leading, pad);
+                Y += hH;
+
+                foreach (var r in rows)
+                {
+                    float rh = RowHeight(r, colW, size, leading, pad, min);
+                    if (Y + rh > BodyBottom)
+                    {
+                        NewPage();
+                        DrawRow(header, colW, Y, hH, size, leading, pad);
+                        Y += hH;
+                    }
+                    DrawRow(r, colW, Y, rh, size, leading, pad);
+                    Y += rh;
+                }
+            }
+        }
+
+        /// <summary>Fecha / oficio / asunto (derecha) + destinatario (izquierda). Se repite en cada página.</summary>
+        private static void C_DrawOficioHeader(C_Oficio o, string fechaTxt, string oficio, string asunto, string destNombre, string destCargo)
+        {
+            const float fechaY = 140f, oficioY = 154f, asuntoY = 168f;
+            const float destY = 214f, cargoY = 231f, presenteY = 248f;
+
+            o.TextRight(fechaTxt, o.Right, fechaY, o.F, 9.6f);
+            o.TextRight($"OFICIO No. {oficio}", o.Right, oficioY, o.B, 9.9f);
+            o.TextRight($"ASUNTO: {asunto}", o.Right, asuntoY, o.F, 9.6f);
+
+            o.Text((destNombre ?? "").ToUpperInvariant(), o.Left, destY, o.B, 9.9f);
+            o.Text((destCargo ?? "").ToUpperInvariant(), o.Left, cargoY, o.B, 9.7f);
+            o.Text("P R E S E N T E", o.Left, presenteY, o.B, 9.7f);
+        }
+
+        /// <summary>A T E N T A M E N T E + lema + espacio para firma/sello + nombre y cargo + ccp.</summary>
+        private static void C_DrawFirmaBloque(C_Oficio o, string firmaNombre, string firmaCargo)
+        {
+            o.Ensure(126f);
+            o.Y += 4f;
+            o.Text("A T E N T A M E N T E", o.Left, o.Y + 10f, o.B, 9.9f); o.Y += 16f;
+            o.Text(C_Lema1, o.Left, o.Y + 8f, o.I, 8.4f); o.Y += 11f;
+            o.Text(C_Lema2, o.Left, o.Y + 8f, o.I, 8.4f); o.Y += 11f;
+            o.Y += 54f; // espacio para la firma y el sello
+            o.Text((firmaNombre ?? "").ToUpperInvariant(), o.Left, o.Y + 10f, o.B, 9.8f); o.Y += 13f;
+            o.Text((firmaCargo ?? "").ToUpperInvariant(), o.Left, o.Y + 10f, o.B, 9.6f); o.Y += 13f;
+
+            // ccp: fijo en la parte baja (por encima del pie del membrete)
+            o.Text("ccp. Expediente", o.Left, 668f, o.F, 8.8f);
+            o.Text(C_CcpIniciales, o.Left, 680f, o.F, 8.8f);
+        }
+
+        /// <summary>"ENE-JUN 2026" → "ENERO-JUNIO/2026" (como aparece en el oficio real).</summary>
+        private static string C_PeriodoLargo(string periodo)
+        {
+            var txt = (periodo ?? "").Trim().ToUpperInvariant();
+            if (txt.Length == 0) return "—";
+
+            var meses = new Dictionary<string, string>
+            {
+                ["ENE"] = "ENERO", ["FEB"] = "FEBRERO", ["MAR"] = "MARZO", ["ABR"] = "ABRIL",
+                ["MAY"] = "MAYO", ["JUN"] = "JUNIO", ["JUL"] = "JULIO", ["AGO"] = "AGOSTO",
+                ["SEP"] = "SEPTIEMBRE", ["OCT"] = "OCTUBRE", ["NOV"] = "NOVIEMBRE", ["DIC"] = "DICIEMBRE"
+            };
+
+            var m = System.Text.RegularExpressions.Regex.Match(txt, @"^([A-ZÁÉÍÓÚ]{3,})\s*-\s*([A-ZÁÉÍÓÚ]{3,})[\s/]+(\d{4})$");
+            if (!m.Success) return txt;
+
+            string Largo(string s) => meses.TryGetValue(s, out var l) ? l : s;
+            return $"{Largo(m.Groups[1].Value)}-{Largo(m.Groups[2].Value)}/{m.Groups[3].Value}";
+        }
+
+        // ═══════════════════════════════════════════════════════════════════
         // ASESOR INTERNO — consolidado (varios proyectos del mismo docente)
+        //
+        // Formato real: tabla vertical por proyecto con las filas
+        //   Número de control / Nombre del residente / Carrera /
+        //   Nombre del proyecto / Período de realización / Empresa
         // ═══════════════════════════════════════════════════════════════════
         public byte[] BuildOficioAsignacionAsesorInternoConsolidado(
             byte[] templatePdf, OficioAsignacionAsesorInternoConsolidadoRequest req)
@@ -209,179 +499,63 @@ namespace WebApiVinculacionProyectosV2.Services
             if (proyectos.Count == 0)
                 proyectos.Add(new ProyectoAsesorInternoItem { NombreProyecto = "—", Empresa = "—", Carrera = "—", PeriodoRealizacion = "—" });
 
+            var esMx = CultureInfo.GetCultureInfo("es-MX");
+            string fechaTxt = $"{req.Ciudad} {req.Fecha.ToString("dd'/'MMMM'/'yyyy", esMx)}";
+            string cargoFirma = string.Join(" ", new[] { req.FirmaCargoLinea1, req.FirmaCargoLinea2 }.Where(s => !string.IsNullOrWhiteSpace(s)));
+
             using var ms = new MemoryStream();
             using var writer = new PdfWriter(ms);
             using var outPdf = new PdfDocument(writer);
 
-            var font = PdfFontFactory.CreateFont(StandardFonts.HELVETICA);
-            var fontBold = PdfFontFactory.CreateFont(StandardFonts.HELVETICA_BOLD);
-            var esMx = CultureInfo.GetCultureInfo("es-MX");
+            var o = new C_Oficio(this, outPdf, templatePdf,
+                h => C_DrawOficioHeader(h, fechaTxt, req.Oficio, "Asesor Interno de Residencia Profesional",
+                                        req.DestinatarioNombre, req.DestinatarioCargoLinea1));
+            o.NewPage();
 
-            const float left = 72f;
-            const float rightMargin = 72f;
-            const float fechaY = 140f, oficioY = 154f, asuntoY = 168f;
-            const float destinatarioTop = 214f, introTop = 260f;
-            const float tableTop = 330f, footerSafe = 80f;
-            const float atentamenteY = 610f, firmaNombreY = 650f, firmaCargoY = 665f, ccpY = 715f;
+            const float size = 9.6f, lead = 11.4f;
+            bool varios = proyectos.Count > 1;
 
-            float[] colW = { 150f, 130f, 100f, 100f }; // Proyecto | Empresa | Carrera | Periodo
-            float pad = 4f, fontSize = 9.4f, leading = 11.2f, headerH = 20f;
+            o.Para(new[] { new C_Oficio.Run(varios
+                ? "Por este conducto informo a usted que ha sido asignado(a) para fungir como Asesor Interno de los siguientes proyectos de Residencia Profesional:"
+                : "Por este conducto informo a usted que ha sido asignado(a) para fungir como Asesor Interno del Proyecto de Residencia Profesional que a continuación se describe:") },
+                size, lead, 8f);
 
-            float MeasureRowHeight(ProyectoAsesorInternoItem p, float w1, float w2, float w3, float w4)
+            var colW = C_Oficio.Cols(o.Width, 135f, 333f); // etiqueta | valor
+            string Up(string s) => string.IsNullOrWhiteSpace(s) ? "—" : s.Trim().ToUpperInvariant();
+
+            foreach (var p in proyectos)
             {
-                string proyectoTxt = (p.NombreProyecto ?? "—") +
-                    (p.Residentes != null && p.Residentes.Count > 0
-                        ? "\n" + string.Join(", ", p.Residentes)
-                        : "");
+                var controles = (p.NumerosControl != null && p.NumerosControl.Count > 0)
+                    ? p.NumerosControl
+                    : (string.IsNullOrWhiteSpace(p.NumeroControl) ? new List<string>() : new List<string> { p.NumeroControl });
 
-                int l1 = Math.Max(1, C_WrapLines(proyectoTxt, font, fontSize, w1 - pad * 2).Count);
-                int l2 = Math.Max(1, C_WrapLines(p.Empresa ?? "—", font, fontSize, w2 - pad * 2).Count);
-                int l3 = Math.Max(1, C_WrapLines(p.Carrera ?? "—", font, fontSize, w3 - pad * 2).Count);
-                int l4 = Math.Max(1, C_WrapLines(p.PeriodoRealizacion ?? "—", font, fontSize, w4 - pad * 2).Count);
+                C_Oficio.Cell[] Fila(string etiqueta, string valor) =>
+                    new[] { new C_Oficio.Cell(etiqueta), new C_Oficio.Cell(valor) };
 
-                int maxLines = new[] { l1, l2, l3, l4 }.Max();
-                return Math.Max(26f, (maxLines * leading) + pad * 2);
+                var filas = new List<C_Oficio.Cell[]>
+                {
+                    Fila("Número de control:", controles.Count > 0 ? string.Join("\n", controles) : "—"),
+                    Fila("Nombre del residente:", (p.Residentes != null && p.Residentes.Count > 0)
+                        ? string.Join("\n", p.Residentes.Select(Up)) : "—"),
+                    Fila("Carrera:", Up(p.Carrera)),
+                    Fila("Nombre del proyecto:", Up(p.NombreProyecto)),
+                    Fila("Período de realización:", C_PeriodoLargo(p.PeriodoRealizacion)),
+                    Fila("Empresa:", Up(p.Empresa)),
+                };
+
+                o.GridBlock(colW, filas, 9.4f, 11.2f, 3f, 16f);
+                o.Y += 10f;
             }
 
-            int idx = 0;
+            o.Y += 2f;
+            o.Para(new[] { new C_Oficio.Run(
+                $"Así mismo, le solicito dar el seguimiento pertinente a la realización {(varios ? "de cada proyecto" : "del proyecto")} aplicando los lineamientos establecidos para ello, en el procedimiento para Residencia Profesional.") },
+                size, lead, 7f);
+            o.Para(new[] { new C_Oficio.Run(
+                "Agradezco de antemano su valioso apoyo en esta importante actividad para la formación profesional de nuestro estudiantado.") },
+                size, lead, 4f);
 
-            while (idx < proyectos.Count)
-            {
-                var page = C_NewTemplatedPage(outPdf, templatePdf);
-                var ps = page.GetPageSize();
-                float pageW = ps.GetWidth(), pageH = ps.GetHeight();
-                float right = pageW - rightMargin;
-                float width = right - left;
-
-                float sumCol = colW.Sum();
-                float scale = width / sumCol;
-                float w1 = colW[0] * scale, w2 = colW[1] * scale, w3 = colW[2] * scale, w4 = colW[3] * scale;
-
-                float Y(float yFromTop) => pageH - yFromTop;
-                var pdfCanvas = new PdfCanvas(page);
-                var canvas = new Canvas(pdfCanvas, ps);
-
-                void AbsText(string text, float x, float yFromTop, PdfFont f, float size, TextAlignment align)
-                {
-                    var p = new Paragraph(text ?? "").SetFont(f).SetFontSize(size).SetMargin(0).SetPadding(0);
-                    canvas.ShowTextAligned(p, x, Y(yFromTop), align);
-                }
-
-                bool firstPage = (idx == 0);
-
-                // Encabezado (todas las páginas)
-                string fechaTxt = $"{req.Ciudad} {req.Fecha.ToString("dd'/'MMMM'/'yyyy", esMx)}".ToLower(esMx);
-                AbsText(char.ToUpper(fechaTxt[0]) + fechaTxt.Substring(1), right, fechaY, font, 9.6f, TextAlignment.RIGHT);
-                AbsText($"OFICIO No. {req.Oficio}", right, oficioY, fontBold, 9.9f, TextAlignment.RIGHT);
-                AbsText("ASUNTO: Asesor Interno de Residencia Profesional", right, asuntoY, font, 9.6f, TextAlignment.RIGHT);
-
-                float y = destinatarioTop;
-                AbsText((req.DestinatarioNombre ?? "").ToUpperInvariant(), left, y, fontBold, 9.9f, TextAlignment.LEFT);
-                y += 17f;
-                AbsText((req.DestinatarioCargoLinea1 ?? "").ToUpperInvariant(), left, y, fontBold, 9.7f, TextAlignment.LEFT);
-                y += 17f;
-                AbsText("P R E S E N T E.", left, y, fontBold, 9.7f, TextAlignment.LEFT);
-
-                if (firstPage)
-                {
-                    var intro = new Paragraph(
-                        proyectos.Count > 1
-                        ? "Por este conducto informo a usted que ha sido asignado(a) para fungir como Asesor Interno de los siguientes proyectos de Residencia Profesional:"
-                        : "Por este conducto informo a usted que ha sido asignado(a) para fungir como Asesor Interno del Proyecto de Residencia Profesional que a continuación se describe:")
-                        .SetFont(font).SetFontSize(9.6f).SetFixedLeading(11.2f).SetMargin(0);
-                    intro.SetFixedPosition(left, Y(introTop) - 40f, width);
-                    canvas.Add(intro);
-                }
-
-                // Selección de filas que caben en esta página
-                float maxTableEndTopFinal = atentamenteY - 18f;
-                float maxTableHeightFinal = maxTableEndTopFinal - tableTop;
-                float maxTableEndTopMid = pageH - footerSafe;
-                float maxTableHeightMid = maxTableEndTopMid - tableTop;
-
-                float neededHFinal = headerH;
-                for (int j = idx; j < proyectos.Count; j++)
-                {
-                    neededHFinal += MeasureRowHeight(proyectos[j], w1, w2, w3, w4);
-                    if (neededHFinal > maxTableHeightFinal) break;
-                }
-                bool isLastCandidate = neededHFinal <= maxTableHeightFinal;
-                float maxTableHeight = isLastCandidate ? maxTableHeightFinal : maxTableHeightMid;
-
-                float used = headerH;
-                var take = new List<ProyectoAsesorInternoItem>();
-                while (idx < proyectos.Count)
-                {
-                    float rh = MeasureRowHeight(proyectos[idx], w1, w2, w3, w4);
-                    if (used + rh > maxTableHeight && take.Count > 0) break;
-                    take.Add(proyectos[idx]);
-                    used += rh;
-                    idx++;
-                }
-
-                float tableH = used;
-                float tableBottom = Y(tableTop) - tableH;
-
-                var table = new Table(UnitValue.CreatePointArray(new[] { w1, w2, w3, w4 }))
-                    .SetWidth(UnitValue.CreatePointValue(width))
-                    .SetFixedPosition(left, tableBottom, width)
-                    .SetFont(font).SetFontSize(fontSize);
-
-                Cell MakeCell(string txt, bool bold = false, bool header = false, float? height = null)
-                {
-                    var para = new Paragraph(txt ?? "").SetFont(bold ? fontBold : font)
-                        .SetFontSize(fontSize).SetFixedLeading(leading).SetMargin(0);
-                    var c = new Cell().Add(para).SetPadding(pad)
-                        .SetBorder(new SolidBorder(ColorConstants.BLACK, 1))
-                        .SetVerticalAlignment(VerticalAlignment.MIDDLE);
-                    if (header) c.SetBackgroundColor(new DeviceGray(0.90f));
-                    if (height.HasValue) c.SetHeight(height.Value);
-                    return c;
-                }
-
-                table.AddHeaderCell(MakeCell("PROYECTO / RESIDENTE(S)", true, true, headerH));
-                table.AddHeaderCell(MakeCell("EMPRESA", true, true, headerH));
-                table.AddHeaderCell(MakeCell("CARRERA", true, true, headerH));
-                table.AddHeaderCell(MakeCell("PERIODO", true, true, headerH));
-
-                foreach (var p in take)
-                {
-                    float rh = MeasureRowHeight(p, w1, w2, w3, w4);
-                    string proyectoTxt = (p.NombreProyecto ?? "—") +
-                        (p.Residentes != null && p.Residentes.Count > 0 ? "\n" + string.Join(", ", p.Residentes) : "");
-
-                    table.AddCell(MakeCell(proyectoTxt, height: rh));
-                    table.AddCell(MakeCell(p.Empresa, height: rh));
-                    table.AddCell(MakeCell(p.Carrera, height: rh));
-                    table.AddCell(MakeCell(p.PeriodoRealizacion, height: rh));
-                }
-
-                canvas.Add(table);
-
-                bool lastPage = idx >= proyectos.Count;
-                if (lastPage)
-                {
-                    float cierreTop = tableTop + tableH + 18f;
-                    var cierre = new Paragraph(
-                        "Así mismo, le solicito dar el seguimiento pertinente a la realización de cada proyecto aplicando los\n" +
-                        "lineamientos establecidos en el Procedimiento para Realizar y Acreditar la Residencia Profesional.\n\n" +
-                        "Agradezco de antemano su valioso apoyo en esta importante actividad para la formación profesional\n" +
-                        "de nuestro estudiantado.")
-                        .SetFont(font).SetFontSize(9.6f).SetFixedLeading(11.2f).SetMargin(0);
-                    cierre.SetFixedPosition(left, Y(cierreTop) - 90f, width);
-                    canvas.Add(cierre);
-
-                    AbsText("A T E N T A M E N T E", left + width / 2, atentamenteY, fontBold, 9.9f, TextAlignment.CENTER);
-                    AbsText(req.FirmaNombre ?? "", left + width / 2, firmaNombreY, fontBold, 9.8f, TextAlignment.CENTER);
-                    string cargo = string.Join(" ", new[] { req.FirmaCargoLinea1, req.FirmaCargoLinea2 }.Where(s => !string.IsNullOrWhiteSpace(s)));
-                    AbsText(cargo, left + width / 2, firmaCargoY, fontBold, 9.5f, TextAlignment.CENTER);
-
-                    AbsText("ccp. Expediente", left, ccpY, font, 9.2f, TextAlignment.LEFT);
-                    AbsText("MMH/mmvh", left, ccpY + 12f, font, 9.2f, TextAlignment.LEFT);
-                }
-
-                canvas.Close();
-            }
+            C_DrawFirmaBloque(o, req.FirmaNombre, cargoFirma);
 
             outPdf.Close();
             return ms.ToArray();
@@ -389,6 +563,9 @@ namespace WebApiVinculacionProyectosV2.Services
 
         // ═══════════════════════════════════════════════════════════════════
         // REVISOR DE REPORTE PRELIMINAR — consolidado (varios proyectos)
+        //
+        // Formato real: texto con el nombre del proyecto en negritas y tabla
+        // "Número de control | Estudiante" (una fila por estudiante).
         // ═══════════════════════════════════════════════════════════════════
         public byte[] BuildOficioAsignacionRevisorReportePreliminarConsolidado(
             byte[] templatePdf, OficioAsignacionRevisorReportePreliminarConsolidadoRequest req)
@@ -398,167 +575,75 @@ namespace WebApiVinculacionProyectosV2.Services
             if (proyectos.Count == 0)
                 proyectos.Add(new ProyectoRevisorReportePreliminarItem { NombreProyecto = "—" });
 
+            var esMx = CultureInfo.GetCultureInfo("es-MX");
+            string fechaTxt = $"{req.Ciudad} {req.Fecha.ToString("dd 'de' MMMM 'de' yyyy", esMx)}";
+
             using var ms = new MemoryStream();
             using var writer = new PdfWriter(ms);
             using var outPdf = new PdfDocument(writer);
 
-            var font = PdfFontFactory.CreateFont(StandardFonts.HELVETICA);
-            var fontBold = PdfFontFactory.CreateFont(StandardFonts.HELVETICA_BOLD);
-            var esMx = CultureInfo.GetCultureInfo("es-MX");
+            var o = new C_Oficio(this, outPdf, templatePdf,
+                h => C_DrawOficioHeader(h, fechaTxt, req.Oficio, req.Asunto,
+                                        req.DestinatarioNombre, req.DestinatarioCargoLinea1));
+            o.NewPage();
 
-            const float left = 72f;
-            const float rightMargin = 72f;
-            const float fechaY = 140f, oficioY = 154f, asuntoY = 168f;
-            const float destinatarioTop = 214f, introTop = 260f;
-            const float tableTop = 340f, footerSafe = 80f;
-            const float atentamenteY = 610f, firmaNombreY = 650f, firmaCargoY = 665f, ccpY = 715f;
+            const float size = 9.6f, lead = 11.4f;
+            bool varios = proyectos.Count > 1;
 
-            float[] colW = { 220f, 260f }; // Proyecto | Estudiantes (No.Control - Nombre)
-            float pad = 4f, fontSize = 9.4f, leading = 11.2f, headerH = 20f;
+            o.Para(new[] { new C_Oficio.Run(
+                $"Con fundamento en el Lineamiento para la Operación de la Residencia Profesional, específicamente atendiendo al numeral {req.NumeralLineamiento}, " +
+                "el cual establece que todo proyecto debe ser autorizado por la Jefatura del Departamento Académico previo análisis de la Academia, se comunica lo siguiente:") },
+                size, lead, 8f);
 
-            string EstudiantesTexto(ProyectoRevisorReportePreliminarItem p) =>
-                string.Join("\n", (p.Estudiantes ?? new()).Select(e => $"{e.NumeroControl} — {e.NombreEstudiante}"));
+            var colW = C_Oficio.Cols(o.Width, 220f, 260f); // Número de control | Estudiante
 
-            float MeasureRowHeight(ProyectoRevisorReportePreliminarItem p, float w1, float w2)
+            foreach (var p in proyectos)
             {
-                int l1 = Math.Max(1, C_WrapLines(p.NombreProyecto ?? "—", font, fontSize, w1 - pad * 2).Count);
-                var estTxt = EstudiantesTexto(p);
-                int l2 = Math.Max(1, estTxt.Split('\n').Sum(line => Math.Max(1, C_WrapLines(line, font, fontSize, w2 - pad * 2).Count)));
+                var estudiantes = p.Estudiantes ?? new List<RevisorReportePreliminarEstudianteItem>();
+                if (estudiantes.Count == 0)
+                    estudiantes = new List<RevisorReportePreliminarEstudianteItem> { new() { NumeroControl = "—", NombreEstudiante = "—" } };
 
-                int maxLines = Math.Max(l1, l2);
-                return Math.Max(26f, (maxLines * leading) + pad * 2);
+                var runs = new[]
+                {
+                    new C_Oficio.Run("Se le ha designado como "),
+                    new C_Oficio.Run("Revisor(a)", true),
+                    new C_Oficio.Run(" para evaluar el reporte preliminar del proyecto para Residencia Profesional: "),
+                    new C_Oficio.Run((p.NombreProyecto ?? "—").Trim().ToUpperInvariant(), true),
+                    new C_Oficio.Run(estudiantes.Count > 1 ? ", el cual presentan los estudiantes:" : ", el cual presenta el estudiante:")
+                };
+
+                // El texto y el arranque de la tabla se quedan juntos
+                o.Ensure(o.ParaHeight(runs, size, lead) + 8f + 36f);
+                o.Para(runs, size, lead, 8f);
+
+                var header = new[]
+                {
+                    new C_Oficio.Cell("Número de control", true, TextAlignment.CENTER),
+                    new C_Oficio.Cell("Estudiante", true, TextAlignment.CENTER)
+                };
+                var filas = estudiantes.Select(e => new[]
+                {
+                    new C_Oficio.Cell(e.NumeroControl, false, TextAlignment.CENTER),
+                    new C_Oficio.Cell((e.NombreEstudiante ?? "—").Trim().ToUpperInvariant(), false, TextAlignment.CENTER)
+                }).ToList();
+
+                o.GridPaged(colW, header, filas, 9.4f, 11.2f, 3f, 16f);
+                o.Y += 10f;
             }
 
-            int idx = 0;
-
-            while (idx < proyectos.Count)
+            o.Para(new[] { new C_Oficio.Run(
+                $"Su análisis técnico permitirá a la Academia determinar la viabilidad y pertinencia {(varios ? "de los proyectos" : "del proyecto")} para su posterior autorización por esta Jefatura.") },
+                size, lead, 7f);
+            o.Para(new[]
             {
-                var page = C_NewTemplatedPage(outPdf, templatePdf);
-                var ps = page.GetPageSize();
-                float pageW = ps.GetWidth(), pageH = ps.GetHeight();
-                float right = pageW - rightMargin;
-                float width = right - left;
+                new C_Oficio.Run($"En caso de autorizar {(varios ? "los proyectos" : "el proyecto")}, deberá entregar a la oficina de Vinculación el "),
+                new C_Oficio.Run("Anexo II", true),
+                new C_Oficio.Run(", por cada estudiante asignado.")
+            }, size, lead, 7f);
+            o.Para(new[] { new C_Oficio.Run("Agradezco de antemano su valiosa colaboración en este proceso.") },
+                size, lead, 4f);
 
-                float sumCol = colW.Sum();
-                float scale = width / sumCol;
-                float w1 = colW[0] * scale, w2 = colW[1] * scale;
-
-                float Y(float yFromTop) => pageH - yFromTop;
-                var pdfCanvas = new PdfCanvas(page);
-                var canvas = new Canvas(pdfCanvas, ps);
-
-                void AbsText(string text, float x, float yFromTop, PdfFont f, float size, TextAlignment align)
-                {
-                    var p = new Paragraph(text ?? "").SetFont(f).SetFontSize(size).SetMargin(0).SetPadding(0);
-                    canvas.ShowTextAligned(p, x, Y(yFromTop), align);
-                }
-
-                bool firstPage = (idx == 0);
-
-                string fechaTxt = $"{req.Ciudad} {req.Fecha.ToString("dd 'de' MMMM 'de' yyyy", esMx)}".ToLower(esMx);
-                AbsText(char.ToUpper(fechaTxt[0]) + fechaTxt.Substring(1), right, fechaY, font, 9.6f, TextAlignment.RIGHT);
-                AbsText($"OFICIO No. {req.Oficio}", right, oficioY, fontBold, 9.9f, TextAlignment.RIGHT);
-                AbsText($"ASUNTO: {req.Asunto}", right, asuntoY, font, 9.6f, TextAlignment.RIGHT);
-
-                float y = destinatarioTop;
-                AbsText((req.DestinatarioNombre ?? "").ToUpperInvariant(), left, y, fontBold, 9.9f, TextAlignment.LEFT);
-                y += 17f;
-                AbsText((req.DestinatarioCargoLinea1 ?? "").ToUpperInvariant(), left, y, fontBold, 9.7f, TextAlignment.LEFT);
-                y += 17f;
-                AbsText("P R E S E N T E", left, y, fontBold, 9.7f, TextAlignment.LEFT);
-
-                if (firstPage)
-                {
-                    var intro = new Paragraph(
-                        $"Con fundamento en el Lineamiento para la Operación de la Residencia Profesional, numeral {req.NumeralLineamiento}, " +
-                        (proyectos.Count > 1
-                            ? "se le ha designado como Revisor(a) para evaluar el reporte preliminar de los siguientes proyectos de Residencia Profesional:"
-                            : "se le ha designado como Revisor(a) para evaluar el reporte preliminar del siguiente proyecto de Residencia Profesional:"))
-                        .SetFont(font).SetFontSize(9.6f).SetFixedLeading(11.2f).SetMargin(0);
-                    intro.SetFixedPosition(left, Y(introTop) - 45f, width);
-                    canvas.Add(intro);
-                }
-
-                float maxTableEndTopFinal = atentamenteY - 18f;
-                float maxTableHeightFinal = maxTableEndTopFinal - tableTop;
-                float maxTableEndTopMid = pageH - footerSafe;
-                float maxTableHeightMid = maxTableEndTopMid - tableTop;
-
-                float neededHFinal = headerH;
-                for (int j = idx; j < proyectos.Count; j++)
-                {
-                    neededHFinal += MeasureRowHeight(proyectos[j], w1, w2);
-                    if (neededHFinal > maxTableHeightFinal) break;
-                }
-                bool isLastCandidate = neededHFinal <= maxTableHeightFinal;
-                float maxTableHeight = isLastCandidate ? maxTableHeightFinal : maxTableHeightMid;
-
-                float used = headerH;
-                var take = new List<ProyectoRevisorReportePreliminarItem>();
-                while (idx < proyectos.Count)
-                {
-                    float rh = MeasureRowHeight(proyectos[idx], w1, w2);
-                    if (used + rh > maxTableHeight && take.Count > 0) break;
-                    take.Add(proyectos[idx]);
-                    used += rh;
-                    idx++;
-                }
-
-                float tableH = used;
-                float tableBottom = Y(tableTop) - tableH;
-
-                var table = new Table(UnitValue.CreatePointArray(new[] { w1, w2 }))
-                    .SetWidth(UnitValue.CreatePointValue(width))
-                    .SetFixedPosition(left, tableBottom, width)
-                    .SetFont(font).SetFontSize(fontSize);
-
-                Cell MakeCell(string txt, bool bold = false, bool header = false, float? height = null)
-                {
-                    var para = new Paragraph(txt ?? "").SetFont(bold ? fontBold : font)
-                        .SetFontSize(fontSize).SetFixedLeading(leading).SetMargin(0);
-                    var c = new Cell().Add(para).SetPadding(pad)
-                        .SetBorder(new SolidBorder(ColorConstants.BLACK, 1))
-                        .SetVerticalAlignment(VerticalAlignment.MIDDLE);
-                    if (header) c.SetBackgroundColor(new DeviceGray(0.90f));
-                    if (height.HasValue) c.SetHeight(height.Value);
-                    return c;
-                }
-
-                table.AddHeaderCell(MakeCell("PROYECTO", true, true, headerH));
-                table.AddHeaderCell(MakeCell("ESTUDIANTE(S)", true, true, headerH));
-
-                foreach (var p in take)
-                {
-                    float rh = MeasureRowHeight(p, w1, w2);
-                    table.AddCell(MakeCell(p.NombreProyecto, height: rh));
-                    table.AddCell(MakeCell(EstudiantesTexto(p), height: rh));
-                }
-
-                canvas.Add(table);
-
-                bool lastPage = idx >= proyectos.Count;
-                if (lastPage)
-                {
-                    float cierreTop = tableTop + tableH + 18f;
-                    var cierre = new Paragraph(
-                        "Su análisis técnico permitirá a la Academia determinar la viabilidad y pertinencia de cada proyecto para su\n" +
-                        "posterior autorización por esta Jefatura. En caso de autorizarlos, deberá entregar a la oficina de Vinculación\n" +
-                        "el Anexo II por cada estudiante asignado.\n\n" +
-                        "Agradezco de antemano su valiosa colaboración en este proceso.")
-                        .SetFont(font).SetFontSize(9.6f).SetFixedLeading(11.2f).SetMargin(0);
-                    cierre.SetFixedPosition(left, Y(cierreTop) - 90f, width);
-                    canvas.Add(cierre);
-
-                    AbsText("Atentamente", left, atentamenteY, fontBold, 9.9f, TextAlignment.LEFT);
-                    AbsText(req.FirmaNombre ?? "", left, firmaNombreY, fontBold, 9.9f, TextAlignment.LEFT);
-                    AbsText(req.FirmaCargoLinea1 ?? "", left, firmaCargoY, fontBold, 9.8f, TextAlignment.LEFT);
-
-                    AbsText("ccp. Expediente", left, ccpY, font, 9.2f, TextAlignment.LEFT);
-                    AbsText("ICMO/mmvh", left, ccpY + 12f, font, 9.2f, TextAlignment.LEFT);
-                }
-
-                canvas.Close();
-            }
+            C_DrawFirmaBloque(o, req.FirmaNombre, req.FirmaCargoLinea1);
 
             outPdf.Close();
             return ms.ToArray();

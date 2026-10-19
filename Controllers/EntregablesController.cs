@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using WebApiVinculacionProyectosV2.Models.DTOs;
 using WebApiVinculacionProyectosV2.Models;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.Extensions.DependencyInjection;
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using WebApiVinculacionProyectosV2.Servicios;
@@ -305,8 +306,11 @@ namespace WebApiVinculacionProyectosV2.Controllers
             if (ante.IdEstadoEntregable != 4)
                 return Conflict("No puedes aceptar: el anteproyecto no está APROBADO.");
 
-            // 4) Avanzar estado del proyecto
+            // 4) Avanzar estado del proyecto y registrar la fecha REAL de aceptación.
+            // Esta fecha es la que debe aparecer en la constancia, sin importar cuándo
+            // se genere o descargue posteriormente.
             proyecto.idEstado = 6;
+            proyecto.FechaAceptacionAnteproyecto = DateTime.Now.Date;
             await _db.SaveChangesAsync();
 
             // ─────────────────────────────────────────────────────────────────
@@ -331,6 +335,7 @@ namespace WebApiVinculacionProyectosV2.Controllers
                     .Select(e => new {
                         e.noControl,
                         Nombre = (e.Nombre ?? "") + " " + (e.ApellidoPaterno ?? "") + " " + (e.ApellidoMaterno ?? ""),
+                        NombreOficio = (e.ApellidoPaterno ?? "") + " " + (e.ApellidoMaterno ?? "") + " " + (e.Nombre ?? ""),
                         e.idcarrera,
                         e.correoPersonal,
                         CorreoInst = _db.Usuarios.Where(u => u.Id == e.idUsuario).Select(u => u.Correo).FirstOrDefault()
@@ -347,66 +352,8 @@ namespace WebApiVinculacionProyectosV2.Controllers
                         .FirstOrDefaultAsync() ?? "—";
                 }
 
-                // Fechas del proyecto
-                string fechaInicio = "—";
-                string fechaTermino = "—";
-                if (proyecto.HorarioInicio.HasValue)
-                    fechaInicio = proyecto.HorarioInicio.Value.ToString("dd/MM/yyyy");
-                if (proyecto.HorarioFinal.HasValue)
-                    fechaTermino = proyecto.HorarioFinal.Value.ToString("dd/MM/yyyy");
-
-                // Membretado del periodo
-                byte[]? membretePdf = null;
-                if (proyecto.IdPeriodoAcademico.HasValue)
-                {
-                    var mem = await _db.PeriodosMembrentados.AsNoTracking()
-                        .OrderByDescending(x => x.Id)
-                        .FirstOrDefaultAsync(x => x.PeriodoAcademicoId == proyecto.IdPeriodoAcademico);
-                    membretePdf = mem?.PdfBytes;
-                }
-
-                // Número de oficio del periodo activo
-                string numeroOficio = "JV-000/00";
-                if (proyecto.IdPeriodoAcademico.HasValue)
-                {
-                    var periodoUpd = await _db.PeriodosAcademicos
-                        .FirstOrDefaultAsync(p => p.Id == proyecto.IdPeriodoAcademico);
-                    if (periodoUpd != null)
-                    {
-                        numeroOficio = $"{periodoUpd.PrefijoOficio}-{periodoUpd.ConsecutivoOficio:000}/{DateTime.Today.Year % 100:00}";
-                        periodoUpd.ConsecutivoOficio++;
-                        await _db.SaveChangesAsync();
-                    }
-                }
-
-                // Nombre del jefe de departamento
-                string destinatarioNombre = "JEFE DEL DEPARTAMENTO DE SISTEMAS Y COMPUTACIÓN";
-                if (proyecto.IdPeriodoAcademico.HasValue)
-                {
-                    var periodo = await _db.PeriodosAcademicos.AsNoTracking()
-                        .FirstOrDefaultAsync(p => p.Id == proyecto.IdPeriodoAcademico);
-                    if (!string.IsNullOrWhiteSpace(periodo?.JefeDepartamentoNombre))
-                        destinatarioNombre = periodo.JefeDepartamentoNombre.Trim().ToUpperInvariant();
-                }
-
-                // Construir solicitud PDF
-                var req = new ConstanciaAceptacionReportePreliminarRequest
-                {
-                    Fecha = DateTime.Today,
-                    Oficio = numeroOficio,
-                    DestinatarioNombre = destinatarioNombre,
-                    Carrera = carreraNombre,
-                    NoControl = estRaw?.noControl ?? "—",
-                    Estudiante = estRaw?.Nombre.Trim() ?? "—",
-                    TituloReporte = proyecto.Titulo ?? "—",
-                    FechaInicio = fechaInicio,
-                    FechaTermino = fechaTermino,
-                    Dictamen = "APROBADO",
-                    Comentarios = "",
-                    AsesorInterno = asesorNombre
-                };
-
-                var pdfBytes = _pdf.BuildConstanciaAceptacionReportePreliminar(membretePdf ?? Array.Empty<byte>(), req);
+                var datos = await ArmarAceptacionAsync(proyecto);
+                var pdfBytes = _pdf.BuildConstanciaAceptacionReportePreliminar(datos.Membrete, datos.Req);
 
                 // ── Guardar en disco como ProyectoDocumento ──────────────────
                 var carpeta = Path.Combine(_env.ContentRootPath, "uploads", "proyectos", idProyecto.ToString(), "aceptacion");
@@ -438,9 +385,9 @@ namespace WebApiVinculacionProyectosV2.Controllers
                 var cuerpoHtml = $@"
 <p>El anteproyecto del proyecto <b>{System.Net.WebUtility.HtmlEncode(proyecto.Titulo ?? $"Proyecto #{idProyecto}")}</b> ha sido <b>aceptado</b>.</p>
 <ul>
-  <li><b>Estudiante:</b> {System.Net.WebUtility.HtmlEncode(estRaw?.Nombre.Trim() ?? "—")} ({System.Net.WebUtility.HtmlEncode(estRaw?.noControl ?? "—")})</li>
-  <li><b>Asesor interno:</b> {System.Net.WebUtility.HtmlEncode(asesorNombre)}</li>
-  <li><b>Fecha:</b> {DateTime.Today:dd/MM/yyyy}</li>
+  <li><b>Estudiante(s):</b> {System.Net.WebUtility.HtmlEncode(string.Join("; ", datos.Req.Estudiantes.Select(x => $"{x.Nombre.Trim()} ({x.NoControl})")))}</li>
+  <li><b>Asesor interno:</b> {System.Net.WebUtility.HtmlEncode(string.IsNullOrWhiteSpace(datos.Req.AsesorInterno) ? "Por asignar" : datos.Req.AsesorInterno)}</li>
+  <li><b>Fecha:</b> {proyecto.FechaAceptacionAnteproyecto?.ToString("dd/MM/yyyy")}</li>
 </ul>
 <p>Se adjunta el documento de aceptación. También puedes descargarlo desde la plataforma.</p>";
 
@@ -506,6 +453,149 @@ namespace WebApiVinculacionProyectosV2.Controllers
             });
         }
 
+        private sealed class AceptacionDatos
+        {
+            public ConstanciaAceptacionReportePreliminarRequest Req { get; set; } = null!;
+            public byte[] Membrete { get; set; } = Array.Empty<byte>();
+        }
+
+        // Arma los datos de la "Aceptación del Reporte Preliminar" de un proyecto:
+        //  • UN documento por proyecto, con TODOS los integrantes (una fila cada uno).
+        //  • Nombre del asesor interno REAL del proyecto sobre la línea de firma
+        //    (si aún no hay asesor asignado, la línea queda en blanco).
+        //  • Fechas de inicio y término = las del PERIODO ACADÉMICO.
+        //  • "En respuesta al oficio": el número fijo del oficio de revisor del reporte preliminar.
+        private async Task<AceptacionDatos> ArmarAceptacionAsync(Proyectos proyecto)
+        {
+            var idProyecto = proyecto.Id;
+
+            var idDocenteAsesor = await _db.ProyectoDocente.AsNoTracking()
+                .Where(pd => pd.idProyecto == idProyecto && pd.IdTipoRelacion == REL_ASESOR_INTERNO)
+                .Select(pd => pd.idDocente)
+                .FirstOrDefaultAsync();
+
+            var asesor = idDocenteAsesor > 0
+                ? await _db.Docentes.AsNoTracking().FirstOrDefaultAsync(d => d.Id == idDocenteAsesor)
+                : null;
+
+            var asesorNombre = asesor != null
+                ? $"{asesor.Nombre} {asesor.ApellidoPaterno} {asesor.ApellidoMaterno}".Trim()
+                : "";
+
+            var estudiantes = await _db.Estudiantes.AsNoTracking()
+                .Where(e => e.idProyecto == idProyecto)
+                .OrderBy(e => e.id)
+                .Select(e => new
+                {
+                    e.noControl,
+                    NombreOficio = (e.ApellidoPaterno ?? "") + " " + (e.ApellidoMaterno ?? "") + " " + (e.Nombre ?? ""),
+                    e.idcarrera
+                })
+                .ToListAsync();
+
+            var idCarrera = estudiantes.Select(e => e.idcarrera).FirstOrDefault(c => c != null);
+            var carreraNombre = "—";
+            if (idCarrera != null)
+            {
+                carreraNombre = await _db.Carreras.AsNoTracking()
+                    .Where(c => c.Id == idCarrera)
+                    .Select(c => c.Descripcion)
+                    .FirstOrDefaultAsync() ?? "—";
+            }
+
+            var fechaInicio = "—";
+            var fechaTermino = "—";
+            var destinatarioNombre = "JEFE DEL DEPARTAMENTO DE SISTEMAS Y COMPUTACIÓN";
+            byte[] membrete = Array.Empty<byte>();
+
+            if (proyecto.IdPeriodoAcademico.HasValue)
+            {
+                var periodo = await _db.PeriodosAcademicos.AsNoTracking()
+                    .FirstOrDefaultAsync(p => p.Id == proyecto.IdPeriodoAcademico);
+
+                if (periodo != null)
+                {
+                    fechaInicio = periodo.FechaInicio.ToString("dd/MM/yyyy");
+                    fechaTermino = periodo.FechaFin.ToString("dd/MM/yyyy");
+
+                    if (!string.IsNullOrWhiteSpace(periodo.JefeDepartamentoNombre))
+                        destinatarioNombre = periodo.JefeDepartamentoNombre.Trim().ToUpperInvariant();
+                }
+
+                var mem = await _db.PeriodosMembrentados.AsNoTracking()
+                    .OrderByDescending(x => x.Id)
+                    .FirstOrDefaultAsync(x => x.PeriodoAcademicoId == proyecto.IdPeriodoAcademico);
+                membrete = mem?.PdfBytes ?? Array.Empty<byte>();
+            }
+
+            var integrantes = estudiantes
+                .Select(e => new AceptacionEstudianteItem { NoControl = e.noControl ?? "—", Nombre = e.NombreOficio.Trim() })
+                .ToList();
+            if (integrantes.Count == 0)
+                integrantes.Add(new AceptacionEstudianteItem { NoControl = "—", Nombre = "—" });
+
+            var req = new ConstanciaAceptacionReportePreliminarRequest
+            {
+                Fecha = await ObtenerFechaAprobacionAnteproyectoAsync(idProyecto),
+                Oficio = proyecto.OficioRevisorReportePreliminar ?? "",
+                DestinatarioNombre = destinatarioNombre,
+                Carrera = carreraNombre,
+                NoControl = integrantes[0].NoControl,
+                Estudiante = integrantes[0].Nombre,
+                Estudiantes = integrantes,
+                TituloReporte = proyecto.Titulo ?? "—",
+                FechaInicio = fechaInicio,
+                FechaTermino = fechaTermino,
+                Dictamen = "APROBADO",
+                Comentarios = "",
+                AsesorInterno = asesorNombre
+            };
+
+            return new AceptacionDatos { Req = req, Membrete = membrete };
+        }
+
+        // Fecha en que el asesor interno ACEPTÓ formalmente el anteproyecto.
+        // Nunca depende de la fecha de generación/descarga. Para proyectos antiguos que
+        // no tengan todavía el nuevo campo persistido, usamos como compatibilidad la fecha
+        // de la última revisión APROBADA del anteproyecto.
+        private async Task<DateTime> ObtenerFechaAprobacionAnteproyectoAsync(int idProyecto)
+        {
+            var fechaAceptacion = await _db.Proyectos.AsNoTracking()
+                .Where(p => p.Id == idProyecto)
+                .Select(p => p.FechaAceptacionAnteproyecto)
+                .FirstOrDefaultAsync();
+
+            if (fechaAceptacion.HasValue)
+                return fechaAceptacion.Value.Date;
+
+            // Compatibilidad con proyectos aceptados antes de existir FechaAceptacionAnteproyecto:
+            // el PDF de aceptación se registraba en ProyectoDocumentos en el mismo flujo de
+            // aceptación, por lo que su FechaSubida conserva la fecha histórica del evento.
+            var fechaDocumentoAceptacion = await _db.ProyectoDocumentos.AsNoTracking()
+                .Where(d => d.IdProyecto == idProyecto &&
+                            (d.NombreOriginal ?? "").ToUpper().StartsWith("ACEPTACION_ANTEPROYECTO"))
+                .OrderBy(d => d.FechaSubida)
+                .Select(d => (DateTime?)d.FechaSubida)
+                .FirstOrDefaultAsync();
+
+            if (fechaDocumentoAceptacion.HasValue)
+                return fechaDocumentoAceptacion.Value.Date;
+
+            var fechaAprobacion = await (
+                from r in _db.RevisionEntregables.AsNoTracking()
+                join v in _db.EntregableVersiones.AsNoTracking() on r.IdEntregableVersion equals v.Id
+                join e in _db.Entregables.AsNoTracking() on v.IdEntregable equals e.Id
+                join t in _db.TipoEntregables.AsNoTracking() on e.IdTipoEntregable equals t.Id
+                where e.IdProyecto == idProyecto
+                      && t.Descripcion.ToUpper() == "ANTEPROYECTO"
+                      && r.Dictamen == "APROBADO"
+                orderby r.FechaRevision descending
+                select (DateTime?)r.FechaRevision
+            ).FirstOrDefaultAsync();
+
+            return (fechaAprobacion ?? DateTime.Today).Date;
+        }
+
         // Tipo de relación docente-proyecto que identifica al "Asesor Interno"
         // (mismo valor usado en DocumentosController).
         private const int REL_ASESOR_INTERNO = 2;
@@ -535,79 +625,8 @@ namespace WebApiVinculacionProyectosV2.Controllers
                     ? $"{docenteRevisor.Nombre} {docenteRevisor.ApellidoPaterno} {docenteRevisor.ApellidoMaterno}".Trim()
                     : "Asesor Interno";
 
-                var estRaw = await _db.Estudiantes.AsNoTracking()
-                    .Where(e => e.idProyecto == idProyecto)
-                    .Select(e => new {
-                        e.noControl,
-                        Nombre = (e.Nombre ?? "") + " " + (e.ApellidoPaterno ?? "") + " " + (e.ApellidoMaterno ?? ""),
-                        e.idcarrera
-                    })
-                    .FirstOrDefaultAsync();
-
-                string carreraNombre = "—";
-                if (estRaw?.idcarrera != null)
-                {
-                    carreraNombre = await _db.Carreras.AsNoTracking()
-                        .Where(c => c.Id == estRaw.idcarrera)
-                        .Select(c => c.Descripcion)
-                        .FirstOrDefaultAsync() ?? "—";
-                }
-
-                string fechaInicio = "—";
-                string fechaTermino = "—";
-                if (proyecto.HorarioInicio.HasValue)
-                    fechaInicio = proyecto.HorarioInicio.Value.ToString("dd/MM/yyyy");
-                if (proyecto.HorarioFinal.HasValue)
-                    fechaTermino = proyecto.HorarioFinal.Value.ToString("dd/MM/yyyy");
-
-                byte[]? membretePdf = null;
-                if (proyecto.IdPeriodoAcademico.HasValue)
-                {
-                    var mem = await _db.PeriodosMembrentados.AsNoTracking()
-                        .OrderByDescending(x => x.Id)
-                        .FirstOrDefaultAsync(x => x.PeriodoAcademicoId == proyecto.IdPeriodoAcademico);
-                    membretePdf = mem?.PdfBytes;
-                }
-
-                string numeroOficio = "JV-000/00";
-                if (proyecto.IdPeriodoAcademico.HasValue)
-                {
-                    var periodoUpd = await _db.PeriodosAcademicos
-                        .FirstOrDefaultAsync(p => p.Id == proyecto.IdPeriodoAcademico);
-                    if (periodoUpd != null)
-                    {
-                        numeroOficio = $"{periodoUpd.PrefijoOficio}-{periodoUpd.ConsecutivoOficio:000}/{DateTime.Today.Year % 100:00}";
-                        periodoUpd.ConsecutivoOficio++;
-                        await _db.SaveChangesAsync();
-                    }
-                }
-
-                string destinatarioNombre = "JEFE DEL DEPARTAMENTO DE SISTEMAS Y COMPUTACIÓN";
-                if (proyecto.IdPeriodoAcademico.HasValue)
-                {
-                    var periodo = await _db.PeriodosAcademicos.AsNoTracking()
-                        .FirstOrDefaultAsync(p => p.Id == proyecto.IdPeriodoAcademico);
-                    if (!string.IsNullOrWhiteSpace(periodo?.JefeDepartamentoNombre))
-                        destinatarioNombre = periodo.JefeDepartamentoNombre.Trim().ToUpperInvariant();
-                }
-
-                var req = new ConstanciaAceptacionReportePreliminarRequest
-                {
-                    Fecha = DateTime.Today,
-                    Oficio = numeroOficio,
-                    DestinatarioNombre = destinatarioNombre,
-                    Carrera = carreraNombre,
-                    NoControl = estRaw?.noControl ?? "—",
-                    Estudiante = estRaw?.Nombre.Trim() ?? "—",
-                    TituloReporte = proyecto.Titulo ?? "—",
-                    FechaInicio = fechaInicio,
-                    FechaTermino = fechaTermino,
-                    Dictamen = "APROBADO",
-                    Comentarios = "",
-                    AsesorInterno = asesorNombre
-                };
-
-                var pdfBytes = _pdf.BuildConstanciaAceptacionReportePreliminar(membretePdf ?? Array.Empty<byte>(), req);
+                var datos = await ArmarAceptacionAsync(proyecto);
+                var pdfBytes = _pdf.BuildConstanciaAceptacionReportePreliminar(datos.Membrete, datos.Req);
 
                 var carpeta = Path.Combine(_env.ContentRootPath, "uploads", "proyectos", idProyecto.ToString(), "aceptacion");
                 Directory.CreateDirectory(carpeta);
@@ -646,48 +665,30 @@ namespace WebApiVinculacionProyectosV2.Controllers
         [HttpGet("{idProyecto:int}/Aceptacion/Descargar")]
         public async Task<IActionResult> DescargarAceptacionAnteproyecto(int idProyecto)
         {
-            var doc = await _db.ProyectoDocumentos.AsNoTracking()
-                .Where(d => d.IdProyecto == idProyecto && d.NombreOriginal.StartsWith("Aceptacion_Anteproyecto_"))
-                .OrderByDescending(d => d.FechaSubida)
-                .FirstOrDefaultAsync();
-
-            // Caso 1: nunca se generó el documento (proyecto aceptado antes de
-            // que existiera este flujo, o generado solo por la vía "masiva"
-            // que no persiste). Si el proyecto ya está aceptado, lo generamos
-            // retroactivamente aquí mismo.
-            if (doc == null)
+            // Solo el estudiante del proyecto o la jefa de vinculación (Proyecto-Update).
+            // Los docentes NO pueden generar/descargar este documento.
+            var idUsuarioActual = GetUserId();
+            var authSvc = HttpContext.RequestServices.GetRequiredService<IAuthorizationService>();
+            var esJefa = (await authSvc.AuthorizeAsync(User, null, "PERM:Proyecto-Update")).Succeeded;
+            if (!esJefa)
             {
-                var proyecto = await _db.Proyectos.FirstOrDefaultAsync(p => p.Id == idProyecto);
-                if (proyecto == null) return NotFound("Proyecto no existe.");
-
-                if (proyecto.idEstado is null || proyecto.idEstado < 6)
-                    return NotFound("No se ha generado aún el documento de aceptación.");
-
-                var generado = await GenerarYGuardarConstanciaAceptacionAsync(proyecto);
-                if (generado == null)
-                    return NotFound("No se ha generado aún el documento de aceptación.");
-
-                return File(generado.Value.pdfBytes, "application/pdf", $"Aceptacion_Anteproyecto_{idProyecto}.pdf");
+                var esEstudianteDelProyecto = await _db.Estudiantes.AsNoTracking()
+                    .AnyAsync(e => e.idUsuario == idUsuarioActual && e.idProyecto == idProyecto);
+                if (!esEstudianteDelProyecto) return Forbid();
             }
 
-            var rutaCompleta = Path.Combine(_env.ContentRootPath, doc.RutaFisica!.Replace('/', Path.DirectorySeparatorChar));
+            var proyecto = await _db.Proyectos.AsNoTracking().FirstOrDefaultAsync(p => p.Id == idProyecto);
+            if (proyecto == null) return NotFound("Proyecto no existe.");
 
-            // Caso 2: había registro en BD pero el archivo ya no está en disco
-            // (borrado, servidor migrado, etc.) → también lo regeneramos.
-            if (!System.IO.File.Exists(rutaCompleta))
-            {
-                var proyecto = await _db.Proyectos.FirstOrDefaultAsync(p => p.Id == idProyecto);
-                if (proyecto == null) return NotFound("Proyecto no existe.");
+            if (proyecto.idEstado is null || proyecto.idEstado < 6)
+                return NotFound("No se ha generado aún el documento de aceptación.");
 
-                var generado = await GenerarYGuardarConstanciaAceptacionAsync(proyecto);
-                if (generado == null)
-                    return NotFound("El archivo ya no existe en el servidor.");
-
-                return File(generado.Value.pdfBytes, "application/pdf", $"Aceptacion_Anteproyecto_{idProyecto}.pdf");
-            }
-
-            var bytes = await System.IO.File.ReadAllBytesAsync(rutaCompleta);
-            return File(bytes, "application/pdf", $"Aceptacion_Anteproyecto_{idProyecto}.pdf");
+            // Se arma en cada descarga con datos que no cambian entre descargas (número de oficio,
+            // fecha de aprobación, fechas del periodo, integrantes) y el asesor interno vigente,
+            // así el documento sale completo aunque el asesor se haya asignado después de aceptar.
+            var datos = await ArmarAceptacionAsync(proyecto);
+            var pdfBytes = _pdf.BuildConstanciaAceptacionReportePreliminar(datos.Membrete, datos.Req);
+            return File(pdfBytes, "application/pdf", $"Aceptacion_Anteproyecto_{idProyecto}.pdf");
         }
 
 

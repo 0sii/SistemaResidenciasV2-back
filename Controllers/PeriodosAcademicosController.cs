@@ -36,6 +36,9 @@ public sealed class PeriodoAcademicoCreateDto
     public bool Activo { get; set; } = true;
 
     public string JefeDepartamentoNombre { get; set; } = null!;
+
+    // ✅ opcional: con qué número empieza la cuenta de oficios de este periodo (si no se manda, 1)
+    public int? ConsecutivoOficio { get; set; } = null;
 }
 
 public sealed class PeriodoAcademicoUpdateDto
@@ -153,6 +156,10 @@ public async Task<IActionResult> Create([FromBody] PeriodoAcademicoCreateDto dto
         // PrefijoOficio = "JV" (default)
         // ConsecutivoOficio = 1 (default)
     };
+
+    // Consecutivo inicial opcional (p. ej. continuar la cuenta en 110)
+    if (dto.ConsecutivoOficio.HasValue && dto.ConsecutivoOficio.Value > 0)
+        periodo.ConsecutivoOficio = dto.ConsecutivoOficio.Value;
 
     _context.PeriodosAcademicos.Add(periodo);
     await _context.SaveChangesAsync();
